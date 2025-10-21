@@ -1,0 +1,12 @@
+[package]
+name = "ironsign"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cggmp21 = { version = "0.6.2", features = ["curve-secp256k1"] }
+round-based = { version = "0.4.1", features = ["sim"] }
+sha2 = "0.10.9"
+rand = "0.8"
+futures = "0.3.31"
+tokio = "1.47.1"
