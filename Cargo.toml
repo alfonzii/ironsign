@@ -9,4 +9,5 @@ round-based = { version = "0.4.1", features = ["sim"] }
 sha2 = "0.10.9"
 rand = "0.8"
 futures = "0.3.31"
-tokio = { version = "1.47.1", features = ["rt-multi-thread", "macros"] }
+anyhow = "1.0.100"
+tokio = { version = "1.48.0", features = ["rt-multi-thread", "macros", "sync"] }
