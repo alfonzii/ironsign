@@ -668,6 +668,7 @@ dependencies = [
  "cggmp21",
  "cggmp24",
  "futures",
+ "hex",
  "rand",
  "round-based",
  "sha2",

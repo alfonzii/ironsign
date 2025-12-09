@@ -1,11 +1,12 @@
 use anyhow::Result;
 use cggmp24::supported_curves::Secp256k1;
-use cggmp24::{self, ExecutionId, PregeneratedPrimes};
+use cggmp24::{self, DataToSign, ExecutionId, PregeneratedPrimes};
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use rand::rngs::OsRng;
 use round_based::{
     Incoming, MessageDestination, MessageType, MpcParty, MsgId, Outgoing, PartyIndex,
 };
+use sha2::Sha256;
 use std::{
     convert::Infallible,
     pin::Pin,
@@ -221,6 +222,63 @@ async fn run_keygen_once_n_of_n(
     Ok(key_shares)
 }
 
+async fn run_sign_once_n_of_n(
+    n: PartyIndex,
+    key_shares: Vec<cggmp24::KeyShare<Secp256k1>>,
+) -> Result<Vec<u8>> {
+    // Active set: everyone, in keygen order 0..n-1
+    let parties_indexes_at_keygen: Vec<PartyIndex> = (0..n).collect();
+
+    // Build deliveries for the signing phase
+    let mut parties = make_memory_deliveries(n);
+
+    // Prepare the message (as a digest)
+    let msg = DataToSign::digest::<Sha256>(b"hello from signing demo");
+
+    // Spawn one signing task per party
+    let mut handles = Vec::with_capacity(n as usize);
+    for pid in 0..n {
+        let (out_sink, inbox) = parties.remove(0);
+        let delivery = (inbox, out_sink); // (incoming, outgoing)
+        let party = MpcParty::connected(delivery);
+
+        let ks = key_shares[pid as usize].clone();
+        let eid = ExecutionId::new(b"signing-n-of-n");
+        let keygen_indexes = parties_indexes_at_keygen.clone();
+
+        handles.push(tokio::spawn(async move {
+            cggmp24::signing(eid, pid, &keygen_indexes, &ks)
+                .sign(&mut OsRng, party, &msg)
+                .await
+        }));
+    }
+
+    // Collect signatures and assert they are identical
+    let mut sigs = Vec::with_capacity(n as usize);
+    for h in handles {
+        sigs.push(h.await??);
+    }
+    let sig0 = sigs[0].clone();
+    assert!(
+        sigs.iter().all(|s| s == &sig0),
+        "signatures must match across parties"
+    );
+
+    let public_key = key_shares[0].shared_public_key;
+    println!(
+        "Signature verification: {}",
+        sig0.verify(public_key.as_ref(), &msg).is_ok()
+    );
+    // Build compact 64-byte r||s (big-endian)
+    let r_bytes = sig0.r.to_be_bytes(); // typically [u8; 32]
+    let s_bytes = sig0.normalize_s().s.to_be_bytes(); // typically [u8; 32]
+    let mut raw = Vec::with_capacity(r_bytes.len() + s_bytes.len());
+    raw.extend_from_slice(&r_bytes);
+    raw.extend_from_slice(&s_bytes);
+
+    Ok(raw)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Build 3 parties wired through the in-memory router
@@ -276,12 +334,13 @@ async fn main() -> Result<()> {
     r2.await?;
 
     // ----------------------------------
-    println!("\n--- Aux-Info example ---");
+    println!("\n--- CGGMP example ---");
 
-    // CGGMP example
     let n: u16 = 3;
     let aux_infos = run_aux_info_once(n).await?;
     let key_shares = run_keygen_once_n_of_n(n, aux_infos).await?;
-    println!("DKG n-of-n OK, produced {} KeyShares", key_shares.len());
+
+    let sig = run_sign_once_n_of_n(n, key_shares).await?;
+    println!("Signature (r||s) hex: {}", hex::encode(sig));
     Ok(())
 }
