@@ -1,6 +1,10 @@
 use anyhow::Result;
+use cggmp24::{self, ExecutionId, PregeneratedPrimes};
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use round_based::{Incoming, MessageDestination, MessageType, MsgId, Outgoing, PartyIndex};
+use rand::rngs::OsRng;
+use round_based::{
+    Incoming, MessageDestination, MessageType, MpcParty, MsgId, Outgoing, PartyIndex,
+};
 use std::{
     convert::Infallible,
     pin::Pin,
@@ -121,10 +125,8 @@ impl<M> Inbox<M> {
 
 impl<M> Stream for Inbox<M> {
     type Item = Result<Incoming<M>, Infallible>;
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // UnboundedReceiver is Unpin
-        let this = self.get_mut();
-        match Pin::new(&mut this.rx).poll_recv(cx) {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match Pin::new(&mut self.rx).poll_recv(cx) {
             Poll::Ready(Some(msg)) => Poll::Ready(Some(Ok(msg))),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
@@ -135,7 +137,7 @@ impl<M> Stream for Inbox<M> {
 // ------------------------------
 // Factory: build N party pairs
 // ------------------------------
-fn make_memory_deliveries<M: Clone + Send + 'static>(n: PartyIndex) -> Vec<(OutSink<M>, Inbox<M>)> {
+fn make_memory_deliveries<M: Clone + Send + 'static>(n: u16) -> Vec<(OutSink<M>, Inbox<M>)> {
     let (router, mut rxs) = Router::<M>::new(n);
     (0..n)
         .map(|pid| {
@@ -144,6 +146,42 @@ fn make_memory_deliveries<M: Clone + Send + 'static>(n: PartyIndex) -> Vec<(OutS
             (sink, inbox)
         })
         .collect()
+}
+
+// ------------------------------
+// Example: run Aux-Info once
+// ------------------------------
+async fn run_aux_info_once(n: u16) -> anyhow::Result<Vec<cggmp24::key_share::AuxInfo>> {
+    // Build deliveries using the protocol's message type:
+    // We infer the msg type from the AuxInfo protocol.
+    let mut parties = make_memory_deliveries(n);
+
+    // Spawn one task per party
+    let mut handles = Vec::with_capacity(n as usize);
+    for pid in 0..n {
+        let (out_sink, inbox) = parties.remove(0);
+
+        // CGGMP expects (incoming, outgoing)
+        let delivery = (inbox, out_sink);
+        let party = MpcParty::connected(delivery);
+        let eid = ExecutionId::new(b"aux-info-demo");
+
+        handles.push(tokio::spawn(async move {
+            println!("Starting generating primes for party {}", pid);
+            let primes = PregeneratedPrimes::generate(&mut OsRng);
+            println!("Starting aux-info-gen for party {}", pid);
+            cggmp24::aux_info_gen(eid, pid, n, primes)
+                .start(&mut OsRng, party)
+                .await
+        }));
+    }
+
+    // Collect results
+    let mut out = Vec::with_capacity(n as usize);
+    for h in handles {
+        out.push(h.await??);
+    }
+    Ok(out)
 }
 
 #[tokio::main]
@@ -200,5 +238,11 @@ async fn main() -> Result<()> {
     r0.await?;
     r2.await?;
 
+    // ----------------------------------
+    println!("\n--- Aux-Info example ---");
+
+    // RUN AUX-INFO EXAMPLE:
+    let aux_infos = run_aux_info_once(3).await?;
+    println!("Aux-Info ok for {} parties", aux_infos.len());
     Ok(())
 }
