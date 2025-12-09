@@ -1,4 +1,5 @@
 use anyhow::Result;
+use cggmp24::supported_curves::Secp256k1;
 use cggmp24::{self, ExecutionId, PregeneratedPrimes};
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use rand::rngs::OsRng;
@@ -16,8 +17,8 @@ use tokio::sync::mpsc;
 // Return the list of recipient party indices based on the destination type
 fn resolve_recipients(me: PartyIndex, n: u16, dest: MessageDestination) -> Vec<PartyIndex> {
     match dest {
-        MessageDestination::OneParty(pid) => vec![pid],
-        MessageDestination::AllParties => (0..n).filter(|&pid| pid != me).collect(),
+        MessageDestination::OneParty(party_id) => vec![party_id],
+        MessageDestination::AllParties => (0..n).filter(|&party_id| party_id != me).collect(),
     }
 }
 
@@ -140,8 +141,8 @@ impl<M> Stream for Inbox<M> {
 fn make_memory_deliveries<M: Clone + Send + 'static>(n: u16) -> Vec<(OutSink<M>, Inbox<M>)> {
     let (router, mut rxs) = Router::<M>::new(n);
     (0..n)
-        .map(|pid| {
-            let sink = OutSink::new(pid, router.clone());
+        .map(|party_id| {
+            let sink = OutSink::new(party_id, router.clone());
             let inbox = Inbox::new(rxs.remove(0));
             (sink, inbox)
         })
@@ -158,7 +159,7 @@ async fn run_aux_info_once(n: u16) -> anyhow::Result<Vec<cggmp24::key_share::Aux
 
     // Spawn one task per party
     let mut handles = Vec::with_capacity(n as usize);
-    for pid in 0..n {
+    for party_id in 0..n {
         let (out_sink, inbox) = parties.remove(0);
 
         // CGGMP expects (incoming, outgoing)
@@ -167,10 +168,10 @@ async fn run_aux_info_once(n: u16) -> anyhow::Result<Vec<cggmp24::key_share::Aux
         let eid = ExecutionId::new(b"aux-info-demo");
 
         handles.push(tokio::spawn(async move {
-            println!("Starting generating primes for party {}", pid);
+            println!("Starting generating primes for party {}", party_id);
             let primes = PregeneratedPrimes::generate(&mut OsRng);
-            println!("Starting aux-info-gen for party {}", pid);
-            cggmp24::aux_info_gen(eid, pid, n, primes)
+            println!("Starting aux-info-gen for party {}", party_id);
+            cggmp24::aux_info_gen(eid, party_id, n, primes)
                 .start(&mut OsRng, party)
                 .await
         }));
@@ -182,6 +183,42 @@ async fn run_aux_info_once(n: u16) -> anyhow::Result<Vec<cggmp24::key_share::Aux
         out.push(h.await??);
     }
     Ok(out)
+}
+
+async fn run_keygen_once_n_of_n(
+    n: u16,
+    aux_infos: Vec<cggmp24::key_share::AuxInfo>,
+) -> Result<Vec<cggmp24::KeyShare<Secp256k1>>> {
+    // New deliveries for this phase (different Msg type than Aux-Info)
+    let mut parties = make_memory_deliveries(n);
+
+    // Spawn DKG for each party
+    let mut handles = Vec::with_capacity(n as usize);
+    for party_id in 0..n {
+        let (out_sink, inbox) = parties.remove(0);
+        let delivery = (inbox, out_sink); // (incoming, outgoing)
+        let party = MpcParty::connected(delivery);
+
+        let eid = ExecutionId::new(b"dkg-n-of-n");
+        handles.push(tokio::spawn(async move {
+            cggmp24::keygen::<Secp256k1>(eid, party_id, n)
+                .start(&mut OsRng, party)
+                .await
+        }));
+    }
+
+    // Collect incomplete shares
+    let mut incomplete = Vec::with_capacity(n as usize);
+    for h in handles {
+        incomplete.push(h.await??);
+    }
+
+    // Pair each incomplete part with its AuxInfo → final KeyShare
+    let mut key_shares = Vec::with_capacity(n as usize);
+    for (ik, aux) in incomplete.into_iter().zip(aux_infos.into_iter()) {
+        key_shares.push(cggmp24::KeyShare::from_parts((ik, aux))?);
+    }
+    Ok(key_shares)
 }
 
 #[tokio::main]
@@ -241,8 +278,10 @@ async fn main() -> Result<()> {
     // ----------------------------------
     println!("\n--- Aux-Info example ---");
 
-    // RUN AUX-INFO EXAMPLE:
-    let aux_infos = run_aux_info_once(3).await?;
-    println!("Aux-Info ok for {} parties", aux_infos.len());
+    // CGGMP example
+    let n: u16 = 3;
+    let aux_infos = run_aux_info_once(n).await?;
+    let key_shares = run_keygen_once_n_of_n(n, aux_infos).await?;
+    println!("DKG n-of-n OK, produced {} KeyShares", key_shares.len());
     Ok(())
 }

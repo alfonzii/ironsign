@@ -124,6 +124,7 @@ dependencies = [
  "futures",
  "generic-ec",
  "generic-ec-zkp",
+ "hd-wallet",
  "hex",
  "key-share",
  "paillier-zk 0.7.0-alpha.3",
