@@ -14,6 +14,7 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::sync::mpsc;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 // Return the list of recipient party indices based on the destination type
 fn resolve_recipients(me: PartyIndex, n: u16, dest: MessageDestination) -> Vec<PartyIndex> {
@@ -112,39 +113,37 @@ impl<M: Clone + Send + 'static> Sink<Outgoing<M>> for OutSink<M> {
     }
 }
 
-// ----------------------
-// Stream side (per party)
-// ----------------------
-struct Inbox<M> {
+/// Creates a stream from an unbounded receiver channel.
+///
+/// This is a simplified alternative to the explicit `Inbox<M>` struct. Instead of wrapping
+/// the receiver in a custom struct that implements `Stream`, this function directly converts
+/// the `UnboundedReceiverStream` into a stream of `Incoming<M>` messages with `Infallible` errors.
+///
+/// # Arguments
+/// * `rx` - An unbounded MPSC receiver for incoming protocol messages
+///
+/// # Returns
+/// A stream that yields `Result<Incoming<M>, Infallible>` items, one for each message received
+fn inbox_stream<M>(
     rx: mpsc::UnboundedReceiver<Incoming<M>>,
-}
-
-impl<M> Inbox<M> {
-    fn new(rx: mpsc::UnboundedReceiver<Incoming<M>>) -> Self {
-        Self { rx }
-    }
-}
-
-impl<M> Stream for Inbox<M> {
-    type Item = Result<Incoming<M>, Infallible>;
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match Pin::new(&mut self.rx).poll_recv(cx) {
-            Poll::Ready(Some(msg)) => Poll::Ready(Some(Ok(msg))),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-        }
-    }
+) -> impl Stream<Item = Result<Incoming<M>, Infallible>> {
+    UnboundedReceiverStream::new(rx).map(Ok)
 }
 
 // ------------------------------
 // Factory: build N party pairs
 // ------------------------------
-fn make_memory_deliveries<M: Clone + Send + 'static>(n: u16) -> Vec<(OutSink<M>, Inbox<M>)> {
+fn make_memory_deliveries<M: Clone + Send + 'static>(
+    n: u16,
+) -> Vec<(
+    OutSink<M>,
+    impl Stream<Item = Result<Incoming<M>, Infallible>>,
+)> {
     let (router, mut rxs) = Router::<M>::new(n);
     (0..n)
         .map(|party_id| {
             let sink = OutSink::new(party_id, router.clone());
-            let inbox = Inbox::new(rxs.remove(0));
+            let inbox = inbox_stream(rxs.remove(0));
             (sink, inbox)
         })
         .collect()
