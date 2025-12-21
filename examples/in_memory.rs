@@ -1,7 +1,8 @@
 use anyhow::Result;
 use cggmp24::supported_curves::Secp256k1;
-use cggmp24::{self, DataToSign, ExecutionId, PregeneratedPrimes};
-use futures::{Sink, SinkExt, Stream, StreamExt};
+use cggmp24::{self, DataToSign, ExecutionId, PregeneratedPrimes, Signature};
+use futures::future::try_join_all;
+use futures::{Sink, Stream};
 use rand::rngs::OsRng;
 use round_based::{
     Incoming, MessageDestination, MessageType, MpcParty, MsgId, Outgoing, PartyIndex,
@@ -139,208 +140,136 @@ impl<M> Stream for Inbox<M> {
 // ------------------------------
 // Factory: build N party pairs
 // ------------------------------
-fn make_memory_deliveries<M: Clone + Send + 'static>(n: u16) -> Vec<(OutSink<M>, Inbox<M>)> {
-    let (router, mut rxs) = Router::<M>::new(n);
+fn make_memory_deliveries<M: Clone + Send + 'static>(n: u16) -> Vec<(Inbox<M>, OutSink<M>)> {
+    let (router, rxs) = Router::<M>::new(n);
     (0..n)
-        .map(|party_id| {
+        .zip(rxs.into_iter())
+        .map(|(party_id, rx)| {
+            let inbox = Inbox::new(rx);
             let sink = OutSink::new(party_id, router.clone());
-            let inbox = Inbox::new(rxs.remove(0));
-            (sink, inbox)
+            (inbox, sink)
         })
         .collect()
 }
 
-// ------------------------------
-// Example: run Aux-Info once
-// ------------------------------
+// ------------------------------------------- CGGMP --------------------------------------------------------------------
+
 async fn run_aux_info_once(n: u16) -> anyhow::Result<Vec<cggmp24::key_share::AuxInfo>> {
     // Build deliveries using the protocol's message type:
     // We infer the msg type from the AuxInfo protocol.
-    let mut parties = make_memory_deliveries(n);
+    let parties = make_memory_deliveries(n);
+    let eid = ExecutionId::new(b"aux-info-demo");
 
     // Spawn one task per party
-    let mut handles = Vec::with_capacity(n as usize);
-    for party_id in 0..n {
-        let (out_sink, inbox) = parties.remove(0);
-
-        // CGGMP expects (incoming, outgoing)
-        let delivery = (inbox, out_sink);
+    let handles = (0..n).zip(parties.into_iter()).map(|(party_id, delivery)| {
         let party = MpcParty::connected(delivery);
-        let eid = ExecutionId::new(b"aux-info-demo");
 
-        handles.push(tokio::spawn(async move {
-            println!("Starting generating primes for party {}", party_id);
+        tokio::spawn(async move {
+            println!("party {party_id}: generating primes");
             let primes = PregeneratedPrimes::generate(&mut OsRng);
-            println!("Starting aux-info-gen for party {}", party_id);
+            println!("party {party_id}: aux-info start");
             cggmp24::aux_info_gen(eid, party_id, n, primes)
                 .start(&mut OsRng, party)
                 .await
-        }));
-    }
+                .unwrap() // fine for demo
+        })
+    });
 
-    // Collect results
-    let mut out = Vec::with_capacity(n as usize);
-    for h in handles {
-        out.push(h.await??);
-    }
-    Ok(out)
+    // Await results
+    let aux_infos: Vec<_> = try_join_all(handles).await?;
+
+    Ok(aux_infos)
 }
 
 async fn run_keygen_once_n_of_n(
     n: u16,
     aux_infos: Vec<cggmp24::key_share::AuxInfo>,
 ) -> Result<Vec<cggmp24::KeyShare<Secp256k1>>> {
-    // New deliveries for this phase (different Msg type than Aux-Info)
-    let mut parties = make_memory_deliveries(n);
+    // Fresh deliveries for keygen (message type differs from Aux-Info)
+    let parties = make_memory_deliveries(n);
+    let eid = ExecutionId::new(b"dkg-n-of-n");
 
-    // Spawn DKG for each party
-    let mut handles = Vec::with_capacity(n as usize);
-    for party_id in 0..n {
-        let (out_sink, inbox) = parties.remove(0);
-        let delivery = (inbox, out_sink); // (incoming, outgoing)
-        let party = MpcParty::connected(delivery);
-
-        let eid = ExecutionId::new(b"dkg-n-of-n");
-        handles.push(tokio::spawn(async move {
+    // Spawn DKG for each party; unwrap inside the task (demo simplicity)
+    let handles = (0..n).zip(parties.into_iter()).map(|(party_id, delivery)| {
+        tokio::spawn(async move {
             cggmp24::keygen::<Secp256k1>(eid, party_id, n)
-                .start(&mut OsRng, party)
+                .start(&mut OsRng, MpcParty::connected(delivery))
                 .await
-        }));
-    }
+                .unwrap()
+        })
+    });
 
-    // Collect incomplete shares
-    let mut incomplete = Vec::with_capacity(n as usize);
-    for h in handles {
-        incomplete.push(h.await??);
-    }
+    // Gather incomplete shares
+    let incomplete = try_join_all(handles).await?; // Vec<IncompleteKeyPart>
 
     // Pair each incomplete part with its AuxInfo → final KeyShare
-    let mut key_shares = Vec::with_capacity(n as usize);
-    for (ik, aux) in incomplete.into_iter().zip(aux_infos.into_iter()) {
-        key_shares.push(cggmp24::KeyShare::from_parts((ik, aux))?);
-    }
+    let key_shares: Vec<_> = incomplete
+        .into_iter()
+        .zip(aux_infos)
+        .map(|(k, a)| cggmp24::KeyShare::from_parts((k, a)).unwrap())
+        .collect();
+
     Ok(key_shares)
 }
 
 async fn run_sign_once_n_of_n(
     n: PartyIndex,
     key_shares: Vec<cggmp24::KeyShare<Secp256k1>>,
-) -> Result<Vec<u8>> {
+) -> Result<Signature<Secp256k1>> {
     // Active set: everyone, in keygen order 0..n-1
-    let parties_indexes_at_keygen: Vec<PartyIndex> = (0..n).collect();
+    let keygen_indexes: Vec<PartyIndex> = (0..n).collect();
 
     // Build deliveries for the signing phase
-    let mut parties = make_memory_deliveries(n);
+    let parties = make_memory_deliveries(n);
 
     // Prepare the message (as a digest)
     let msg = DataToSign::digest::<Sha256>(b"hello from signing demo");
 
-    // Spawn one signing task per party
-    let mut handles = Vec::with_capacity(n as usize);
-    for pid in 0..n {
-        let (out_sink, inbox) = parties.remove(0);
-        let delivery = (inbox, out_sink); // (incoming, outgoing)
-        let party = MpcParty::connected(delivery);
+    // Keep public key before we move key_shares into the iterator
+    let public_key = key_shares[0].shared_public_key.clone();
 
-        let ks = key_shares[pid as usize].clone();
-        let eid = ExecutionId::new(b"signing-n-of-n");
-        let keygen_indexes = parties_indexes_at_keygen.clone();
+    let handles = (0..n)
+        .zip(parties.into_iter())
+        .zip(key_shares.into_iter())
+        .map(|((party_id, delivery), key_share)| {
+            let party = MpcParty::connected(delivery);
+            let eid = ExecutionId::new(b"signing-n-of-n");
+            let keygen_indexes = keygen_indexes.clone();
 
-        handles.push(tokio::spawn(async move {
-            cggmp24::signing(eid, pid, &keygen_indexes, &ks)
-                .sign(&mut OsRng, party, &msg)
-                .await
-        }));
-    }
+            tokio::spawn(async move {
+                cggmp24::signing(eid, party_id, &keygen_indexes, &key_share)
+                    .sign(&mut OsRng, party, &msg)
+                    .await
+                    .unwrap() // demo simplicity
+            })
+        });
 
-    // Collect signatures and assert they are identical
-    let mut sigs = Vec::with_capacity(n as usize);
-    for h in handles {
-        sigs.push(h.await??);
-    }
+    let sigs = try_join_all(handles).await?;
+
     let sig0 = sigs[0].clone();
     assert!(
         sigs.iter().all(|s| s == &sig0),
         "signatures must match across parties"
     );
 
-    let public_key = key_shares[0].shared_public_key;
-    println!(
-        "Signature verification: {}",
-        sig0.verify(public_key.as_ref(), &msg).is_ok()
-    );
-    // Build compact 64-byte r||s (big-endian)
-    let r_bytes = sig0.r.to_be_bytes(); // typically [u8; 32]
-    let s_bytes = sig0.normalize_s().s.to_be_bytes(); // typically [u8; 32]
-    let mut raw = Vec::with_capacity(r_bytes.len() + s_bytes.len());
-    raw.extend_from_slice(&r_bytes);
-    raw.extend_from_slice(&s_bytes);
+    let verified = sig0.verify(public_key.as_ref(), &msg).is_ok();
 
-    Ok(raw)
+    println!("Signing finished (n-of-n).");
+    println!("  verified: {}", if verified { "OK" } else { "FAILED" });
+
+    Ok(sig0)
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Build 3 parties wired through the in-memory router
-    let n: u16 = 3;
-    let mut parties = make_memory_deliveries::<String>(n);
-
-    // Unpack party pairs (sink, inbox)
-    let (_sink0, mut inbox0) = parties.remove(0);
-    let (mut sink1, _inbox1) = parties.remove(0);
-    let (mut sink2, mut inbox2) = parties.remove(0);
-
-    // SPAWN RECEIVERS:
-    // party0 expects TWO messages (broadcast from 1, p2p from 2)
-    let r0 = tokio::spawn(async move {
-        for i in 0..2 {
-            if let Some(Ok(incoming)) = inbox0.next().await {
-                println!(
-                    "party0 recv {}: id={}, from={}, type={:?}, msg={:?}",
-                    i, incoming.id, incoming.sender, incoming.msg_type, incoming.msg
-                );
-            }
-        }
-    });
-    // party2 expects ONE message (broadcast from 1). Party1 receives nothing
-    let r2 = tokio::spawn(async move {
-        if let Some(Ok(incoming)) = inbox2.next().await {
-            println!(
-                "party2 recv: id={}, from={}, type={:?}, msg={:?}",
-                incoming.id, incoming.sender, incoming.msg_type, incoming.msg
-            );
-        }
-    });
-
-    // SENDER ACTIONS:
-    // 1) party1 broadcasts (goes to 0 and 2; same MsgId on both)
-    sink1
-        .send(Outgoing {
-            recipient: MessageDestination::AllParties,
-            msg: "hello all".to_string(),
-        })
-        .await?;
-
-    // 2) party2 sends P2P to party0 (only 0 receives)
-    sink2
-        .send(Outgoing {
-            recipient: MessageDestination::OneParty(0),
-            msg: "hi 0".to_string(),
-        })
-        .await?;
-
-    // Wait for receivers to print what they got
-    r0.await?;
-    r2.await?;
-
-    // ----------------------------------
-    println!("\n--- CGGMP example ---");
-
     let n: u16 = 3;
     let aux_infos = run_aux_info_once(n).await?;
     let key_shares = run_keygen_once_n_of_n(n, aux_infos).await?;
 
     let sig = run_sign_once_n_of_n(n, key_shares).await?;
-    println!("Signature (r||s) hex: {}", hex::encode(sig));
+    let r_bytes = sig.r.to_be_bytes();
+    let s_bytes = sig.normalize_s().s.to_be_bytes(); // low-s
+    println!("  r (32B, BE): {}", hex::encode(r_bytes));
+    println!("  s (32B, BE, low-s): {}", hex::encode(s_bytes));
     Ok(())
 }
