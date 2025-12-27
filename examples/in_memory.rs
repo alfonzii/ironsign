@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use cggmp24::supported_curves::Secp256k1;
 use cggmp24::{self, DataToSign, ExecutionId, PregeneratedPrimes, Signature};
 use futures::future::try_join_all;
@@ -8,6 +8,8 @@ use round_based::{
     Incoming, MessageDestination, MessageType, MpcParty, MsgId, Outgoing, PartyIndex,
 };
 use sha2::Sha256;
+use std::collections::VecDeque;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
     convert::Infallible,
     pin::Pin,
@@ -15,6 +17,50 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::sync::mpsc;
+
+type PresigTuple = (
+    cggmp24::Presignature<Secp256k1>,
+    cggmp24::signing::PresignaturePublicData<Secp256k1>,
+);
+
+struct PresignatureSet {
+    presigs: Vec<cggmp24::Presignature<Secp256k1>>, // one per party, in party-id order
+    commitments: cggmp24::signing::PresignaturePublicData<Secp256k1>,
+}
+
+impl PresignatureSet {
+    fn from_raw(n: u16, raw: Vec<PresigTuple>) -> Result<Self> {
+        if raw.len() != n as usize {
+            return Err(anyhow!("expected {n} presigs, got {}", raw.len()));
+        }
+
+        // All parties should return the same PresignaturePublicData; use party 0's copy.
+        let commitments = raw[0].1.clone();
+        if commitments.commitments.len() != n as usize {
+            return Err(anyhow!(
+                "commitments length mismatch: expected {n}, got {}",
+                commitments.commitments.len()
+            ));
+        }
+
+        // Check that all parties have identical commitments
+        for (i, (_, pub_data)) in raw.iter().enumerate().skip(1) {
+            if pub_data != &commitments {
+                return Err(anyhow!(
+                    "commitments mismatch at party {i}: expected equal commitments from all parties"
+                ));
+            }
+        }
+
+        let presigs = raw.into_iter().map(|(p, _pub)| p).collect();
+        Ok(Self {
+            presigs,
+            commitments,
+        })
+    }
+}
+
+type PresignaturePool = VecDeque<PresignatureSet>;
 
 // Return the list of recipient party indices based on the destination type
 fn resolve_recipients(me: PartyIndex, n: u16, dest: MessageDestination) -> Vec<PartyIndex> {
@@ -260,16 +306,112 @@ async fn run_sign_once_n_of_n(
     Ok(sig0)
 }
 
+async fn run_presignatures_once_n_of_n(
+    n: u16,
+    key_shares: Vec<cggmp24::KeyShare<Secp256k1>>,
+) -> Result<
+    Vec<(
+        cggmp24::Presignature<Secp256k1>,
+        cggmp24::signing::PresignaturePublicData<Secp256k1>,
+    )>,
+> {
+    // Fresh deliveries for presignature generation (same message family as signing)
+    let parties = make_memory_deliveries(n);
+
+    // Active set: everyone, in keygen order 0..n-1
+    let parties_indexes_at_keygen: Vec<PartyIndex> = (0..n).collect();
+
+    // One timestamp per function call => unique eid across calls, same eid across parties in this call
+    let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+
+    let handles = (0..n)
+        .zip(parties.into_iter())
+        .zip(key_shares.into_iter())
+        .map(|((party_id, delivery), key_share)| {
+            let keygen_indexes = parties_indexes_at_keygen.clone();
+
+            tokio::spawn(async move {
+                // Important: all parties must use the SAME eid for this execution
+                let eid_str = format!("presig-n-of-n-{ts}");
+                let eid = ExecutionId::new(eid_str.as_bytes());
+
+                cggmp24::signing(eid, party_id, &keygen_indexes, &key_share)
+                    .generate_presignature(&mut OsRng, MpcParty::connected(delivery))
+                    .await
+                    .unwrap() // fine for demo
+            })
+        });
+
+    let presigs = try_join_all(handles).await?;
+    println!("Presignatures finished.");
+
+    Ok(presigs)
+}
+
+async fn build_presignature_pool_n_of_n(
+    n: u16,
+    key_shares: &[cggmp24::KeyShare<Secp256k1>],
+    k: usize,
+) -> Result<PresignaturePool> {
+    let mut pool = VecDeque::with_capacity(k);
+
+    for i in 0..k {
+        println!("Presignature set {}/{}:", i + 1, k);
+
+        let raw = run_presignatures_once_n_of_n(n, key_shares.to_vec()).await?;
+        pool.push_back(PresignatureSet::from_raw(n, raw)?);
+    }
+
+    Ok(pool)
+}
+
+fn sign_with_presig_set_n_of_n(
+    key_shares: &[cggmp24::KeyShare<Secp256k1>],
+    presig_set: PresignatureSet, // taken by value => consumed
+    msg_bytes: &[u8],
+) -> Result<Signature<Secp256k1>> {
+    // Precompute the digest once.
+    let msg_digest = DataToSign::digest::<Sha256>(msg_bytes);
+
+    // Each presignature is consumed here (one-time use).
+    let partial_sigs: Vec<_> = presig_set
+        .presigs
+        .into_iter()
+        .map(|p| p.issue_partial_signature(msg_digest))
+        .collect();
+
+    let sig = cggmp24::PartialSignature::combine(
+        &partial_sigs,
+        &presig_set.commitments,
+        DataToSign::digest::<Sha256>(msg_bytes),
+    )
+    .ok_or_else(|| anyhow!("combine returned None (malformed input or cheating detected)"))?;
+
+    // Verify (must do this!)
+    let pk = key_shares[0].shared_public_key;
+    let verified = sig
+        .verify(pk.as_ref(), &DataToSign::digest::<Sha256>(msg_bytes))
+        .is_ok();
+
+    println!("Signing finished (presignatures).");
+    println!("  verified: {}", if verified { "OK" } else { "FAILED" });
+
+    Ok(sig)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let n: u16 = 3;
+    let n = 3;
     let aux_infos = run_aux_info_once(n).await?;
     let key_shares = run_keygen_once_n_of_n(n, aux_infos).await?;
 
-    let sig = run_sign_once_n_of_n(n, key_shares).await?;
-    let r_bytes = sig.r.to_be_bytes();
-    let s_bytes = sig.normalize_s().s.to_be_bytes(); // low-s
-    println!("  r (32B, BE): {}", hex::encode(r_bytes));
-    println!("  s (32B, BE, low-s): {}", hex::encode(s_bytes));
+    let mut pool = build_presignature_pool_n_of_n(n, &key_shares, 5).await?; // 5 messages max
+
+    for msg in [b"m1", b"m2", b"m3", b"m4", b"m5"] {
+        let set = pool.pop_front().expect("presignature pool empty");
+        let sig = sign_with_presig_set_n_of_n(&key_shares, set, msg)?;
+        println!("  r: {}", hex::encode(sig.r.to_be_bytes()));
+        println!("  s: {}", hex::encode(sig.normalize_s().s.to_be_bytes()));
+    }
     Ok(())
 }
