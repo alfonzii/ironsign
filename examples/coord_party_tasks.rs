@@ -1,5 +1,6 @@
 use anyhow::Result;
 use cggmp24::security_level::SecurityLevel128;
+use cggmp24::supported_curves::Secp256k1;
 use cggmp24::{self, ExecutionId, PregeneratedPrimes};
 use futures::future::try_join_all;
 use futures::{Sink, Stream};
@@ -7,6 +8,7 @@ use rand::rngs::OsRng;
 use round_based::{
     Incoming, MessageDestination, MessageType, MpcParty, MsgId, Outgoing, PartyIndex,
 };
+use sha2::Sha256;
 use std::{
     convert::Infallible,
     pin::Pin,
@@ -15,10 +17,18 @@ use std::{
 };
 use tokio::sync::{mpsc, oneshot};
 
+type AuxMsg = cggmp24::key_refresh::msg::Msg<Sha256, SecurityLevel128>;
+type KeygenMsg = cggmp24::keygen::msg::non_threshold::Msg<Secp256k1, SecurityLevel128, Sha256>;
+
 enum PartyCommand {
     RunAuxInfo {
         reply: oneshot::Sender<anyhow::Result<()>>,
     },
+
+    RunKeygen {
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+
     Shutdown,
 }
 
@@ -30,8 +40,8 @@ struct PartyHandle {
 
 struct PartyState {
     aux_info: Option<cggmp24::key_share::AuxInfo>,
+    key_share: Option<cggmp24::KeyShare<Secp256k1>>,
     // later:
-    // key_share: Option<cggmp24::KeyShare<Secp256k1>>,
     // presig_pool: PresignaturePool,
 }
 
@@ -174,17 +184,19 @@ fn make_memory_deliveries<M: Clone + Send + 'static>(n: u16) -> Vec<(Inbox<M>, O
 fn spawn_party(
     party_id: PartyIndex,
     n: u16,
-    delivery: (
-        Inbox<cggmp24::key_refresh::msg::Msg<sha2::Sha256, SecurityLevel128>>,
-        OutSink<cggmp24::key_refresh::msg::Msg<sha2::Sha256, SecurityLevel128>>,
-    ),
+    aux_delivery: (Inbox<AuxMsg>, OutSink<AuxMsg>),
+    keygen_delivery: (Inbox<KeygenMsg>, OutSink<KeygenMsg>),
 ) -> PartyHandle {
     let (tx, mut rx) = mpsc::unbounded_channel::<PartyCommand>();
 
     tokio::spawn(async move {
-        let (mut inbox, mut out) = delivery;
+        let (mut aux_inbox, mut aux_out) = aux_delivery;
+        let (mut keygen_inbox, mut keygen_out) = keygen_delivery;
 
-        let mut state = PartyState { aux_info: None };
+        let mut state = PartyState {
+            aux_info: None,
+            key_share: None,
+        };
 
         while let Some(cmd) = rx.recv().await {
             match cmd {
@@ -195,12 +207,10 @@ fn spawn_party(
                     let execution_id = ExecutionId::new(b"aux-info-demo");
                     let primes = PregeneratedPrimes::generate(&mut OsRng);
 
-                    // Build a connected party using the long-lived endpoints
-                    let mpc_party = MpcParty::connected((&mut inbox, &mut out));
+                    let mpc_party = MpcParty::connected((&mut aux_inbox, &mut aux_out));
 
                     let result: anyhow::Result<()> = async {
                         println!("[party {party_id}] starting aux_info_gen");
-
                         let generated_aux_info =
                             cggmp24::aux_info_gen(execution_id, party_id, n, primes)
                                 .start(&mut OsRng, mpc_party)
@@ -208,15 +218,40 @@ fn spawn_party(
                                 .map_err(anyhow::Error::from)?;
 
                         println!("[party {party_id}] aux_info_gen finished successfully");
-
                         state.aux_info = Some(generated_aux_info);
                         Ok(())
                     }
                     .await;
 
-                    if let Err(e) = &result {
-                        println!("[party {party_id}] aux-info failed: {e}");
+                    let _ = reply.send(result);
+                }
+
+                PartyCommand::RunKeygen { reply } => {
+                    let execution_id = ExecutionId::new(b"dkg-n-of-n");
+
+                    let mpc_party = MpcParty::connected((&mut keygen_inbox, &mut keygen_out));
+
+                    let result: anyhow::Result<()> = async {
+                        let aux_info = state
+                            .aux_info
+                            .clone()
+                            .ok_or_else(|| anyhow::anyhow!("aux_info not generated yet"))?;
+
+                        println!("[party {party_id}] starting keygen");
+                        let incomplete = cggmp24::keygen::<Secp256k1>(execution_id, party_id, n)
+                            .start(&mut OsRng, mpc_party)
+                            .await
+                            .map_err(anyhow::Error::from)?;
+
+                        println!("[party {party_id}] keygen phase finished, combining parts");
+                        let key_share = cggmp24::KeyShare::from_parts((incomplete, aux_info))
+                            .map_err(anyhow::Error::from)?;
+
+                        println!("[party {party_id}] key_share created successfully");
+                        state.key_share = Some(key_share);
+                        Ok(())
                     }
+                    .await;
 
                     let _ = reply.send(result);
                 }
@@ -247,22 +282,47 @@ async fn broadcast_run_aux_info(handles: &[PartyHandle]) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn broadcast_run_keygen(handles: &[PartyHandle]) -> anyhow::Result<()> {
+    let rxs = handles.iter().map(|h| {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        h.tx.send(PartyCommand::RunKeygen { reply: reply_tx })
+            .unwrap();
+        reply_rx
+    });
+
+    let per_party: Vec<anyhow::Result<()>> = try_join_all(rxs).await?;
+
+    for (i, r) in per_party.into_iter().enumerate() {
+        r.map_err(|e| anyhow::anyhow!("party {} keygen failed: {e}", handles[i].id))?;
+    }
+
+    println!("Keygen finished ({} parties).", handles.len());
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let n: u16 = 3;
 
-    let deliveries = make_memory_deliveries(n);
+    // Separate deliveries for different phases (different message types)
+    let aux_deliveries = make_memory_deliveries::<AuxMsg>(n);
+    let keygen_deliveries = make_memory_deliveries::<KeygenMsg>(n);
 
     let handles: Vec<_> = (0..n)
-        .zip(deliveries.into_iter())
-        .map(|(party_id, delivery)| spawn_party(party_id, n, delivery))
+        .zip(aux_deliveries.into_iter())
+        .zip(keygen_deliveries.into_iter())
+        .map(|((party_id, aux_delivery), keygen_delivery)| {
+            spawn_party(party_id, n, aux_delivery, keygen_delivery)
+        })
         .collect();
 
     broadcast_run_aux_info(&handles).await?;
+    println!("Coordinator is sleeping...");
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    broadcast_run_keygen(&handles).await?;
 
     for h in &handles {
         let _ = h.tx.send(PartyCommand::Shutdown);
     }
-
     Ok(())
 }
