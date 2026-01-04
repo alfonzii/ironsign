@@ -1,4 +1,5 @@
 use anyhow::Result;
+use cggmp24::generic_ec::curves::secp256k1::EncodedPoint;
 use cggmp24::security_level::SecurityLevel128;
 use cggmp24::supported_curves::Secp256k1;
 use cggmp24::{self, ExecutionId, PregeneratedPrimes};
@@ -27,6 +28,10 @@ enum PartyCommand {
 
     RunKeygen {
         reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+
+    GetSharedPublicKeyBytes {
+        reply: oneshot::Sender<anyhow::Result<EncodedPoint>>,
     },
 
     Shutdown,
@@ -256,6 +261,18 @@ fn spawn_party(
                     let _ = reply.send(result);
                 }
 
+                PartyCommand::GetSharedPublicKeyBytes { reply } => {
+                    let result: anyhow::Result<_> = (|| {
+                        let ks = state
+                            .key_share
+                            .as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("key_share not generated yet"))?;
+                        Ok(ks.shared_public_key.to_bytes(true).clone())
+                    })();
+
+                    let _ = reply.send(result);
+                }
+
                 PartyCommand::Shutdown => break,
             }
         }
@@ -300,6 +317,25 @@ async fn broadcast_run_keygen(handles: &[PartyHandle]) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn broadcast_get_shared_public_key_bytes(handles: &[PartyHandle]) -> anyhow::Result<()> {
+    let rxs = handles.iter().map(|h| {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        h.tx.send(PartyCommand::GetSharedPublicKeyBytes { reply: reply_tx })
+            .unwrap();
+        reply_rx
+    });
+
+    let keys: Vec<_> = try_join_all(rxs).await?; // Vec<anyhow::Result<PubKey>>
+    let keys: Vec<_> = keys.into_iter().collect::<anyhow::Result<Vec<_>>>()?;
+
+    // Sanity: all equal
+    let k0 = keys[0].clone();
+    assert!(keys.iter().all(|k| k == &k0), "shared_public_key mismatch");
+
+    println!("Keygen sanity check OK: all parties share the same public key.");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let n: u16 = 3;
@@ -320,6 +356,7 @@ async fn main() -> Result<()> {
     println!("Coordinator is sleeping...");
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     broadcast_run_keygen(&handles).await?;
+    broadcast_get_shared_public_key_bytes(&handles).await?;
 
     for h in &handles {
         let _ = h.tx.send(PartyCommand::Shutdown);
