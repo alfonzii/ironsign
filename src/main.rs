@@ -181,14 +181,14 @@ fn presignature_serde_sim_example() {
     .expect_ok()
     .into_vec();
 
-    // Save auxiliary info to file (JSON)
-    let aux_json = serde_json::to_string_pretty(&aux).expect("serialize aux to json");
-    fs::write("aux_info.json", aux_json).expect("write aux_info.json");
+    // Save auxiliary info to file (MessagePack)
+    let aux_bytes = rmp_serde::to_vec(&aux).expect("serialize aux to msgpack");
+    fs::write("aux_info.msgpack", aux_bytes).expect("write aux_info.msgpack");
 
-    // Load auxiliary info from file (JSON)
-    let aux_file_content = fs::read_to_string("aux_info.json").expect("read aux_info.json");
+    // Load auxiliary info from file (MessagePack)
+    let aux_file_content = fs::read("aux_info.msgpack").expect("read aux_info.msgpack");
     let aux_loaded: Vec<cggmp21::key_share::AuxInfo<SecurityLevel128>> =
-        serde_json::from_str(&aux_file_content).expect("deserialize aux from json");
+        rmp_serde::from_slice(&aux_file_content).expect("deserialize aux from msgpack");
 
     // 3) Complete key shares
     let key_shares: Vec<_> = incomplete
@@ -197,16 +197,16 @@ fn presignature_serde_sim_example() {
         .map(|(k, a)| cggmp21::KeyShare::from_parts((k, a)).unwrap())
         .collect();
 
-    // Save key shares to file (JSON)
-    let key_shares_json =
-        serde_json::to_string_pretty(&key_shares).expect("serialize key_shares to json");
-    fs::write("key_shares.json", key_shares_json).expect("write key_shares.json");
+    // Save key shares to file (MessagePack)
+    let key_shares_bytes =
+        rmp_serde::to_vec_named(&key_shares).expect("serialize key_shares to msgpack");
+    fs::write("key_shares.msgpack", key_shares_bytes).expect("write key_shares.msgpack");
 
-    // Load key shares from file (JSON)
-    let key_shares_file_content =
-        fs::read_to_string("key_shares.json").expect("read key_shares.json");
+    // Load key shares from file (MessagePack)
+    let key_shares_file_content = fs::read("key_shares.msgpack").expect("read key_shares.msgpack");
     let key_shares_loaded: Vec<cggmp21::key_share::KeyShare<Secp256k1, SecurityLevel128>> =
-        serde_json::from_str(&key_shares_file_content).expect("deserialize key_shares from json");
+        rmp_serde::from_slice(&key_shares_file_content)
+            .expect("deserialize key_shares from msgpack");
 
     // 4) Generate presignatures (all 3 parties)
     let eid_presig = ExecutionId::new(b"presig-3of3");
@@ -224,15 +224,15 @@ fn presignature_serde_sim_example() {
     .expect_ok()
     .into_vec();
 
-    // Save presignatures to file (JSON)
-    let presigs_json = serde_json::to_string_pretty(&presigs).expect("serialize presigs to json");
-    fs::write("presignatures.json", presigs_json).expect("write presignatures.json");
+    // Save presignatures to file (MessagePack)
+    let presigs_bytes = rmp_serde::to_vec(&presigs).expect("serialize presigs to msgpack");
+    fs::write("presignatures.msgpack", presigs_bytes).expect("write presignatures.msgpack");
 
-    // Load presignatures from file (JSON)
+    // Load presignatures from file (MessagePack)
     let presigs_file_content =
-        fs::read_to_string("presignatures.json").expect("read presignatures.json");
+        fs::read("presignatures.msgpack").expect("read presignatures.msgpack");
     let presigs_loaded: Vec<cggmp21::Presignature<Secp256k1>> =
-        serde_json::from_str(&presigs_file_content).expect("deserialize presigs from json");
+        rmp_serde::from_slice(&presigs_file_content).expect("deserialize presigs from msgpack");
 
     // 5) Message to sign
     let msg = DataToSign::digest::<sha2::Sha256>(b"hello 3-of-3");
