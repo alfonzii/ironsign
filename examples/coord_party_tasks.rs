@@ -325,13 +325,15 @@ async fn broadcast_get_shared_public_key_bytes(handles: &[PartyHandle]) -> anyho
         reply_rx
     });
 
-    let keys: Vec<_> = try_join_all(rxs).await?; // Vec<anyhow::Result<PubKey>>
-    let keys: Vec<_> = keys.into_iter().collect::<anyhow::Result<Vec<_>>>()?;
+    let pubkeys: Vec<_> = try_join_all(rxs).await?; // Vec<anyhow::Result<PubKey>>
+    let pubkeys: Vec<_> = pubkeys.into_iter().collect::<anyhow::Result<Vec<_>>>()?;
 
     // Sanity: all equal
-    let k0 = keys[0].clone();
-    assert!(keys.iter().all(|k| k == &k0), "shared_public_key mismatch");
-
+    let k0 = pubkeys[0].clone();
+    assert!(
+        pubkeys.iter().all(|k| k == &k0),
+        "shared_public_key mismatch"
+    );
     println!("Keygen sanity check OK: all parties share the same public key.");
     Ok(())
 }
