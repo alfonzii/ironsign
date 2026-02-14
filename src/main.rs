@@ -1,12 +1,16 @@
 use std::fs;
 
-use cggmp21::key_share::AnyKeyShare; // trait providing shared_public_key()
-use cggmp21::{
+use cggmp24::key_share::AnyKeyShare; // trait providing shared_public_key()
+use cggmp24::{
     DataToSign, ExecutionId, PartialSignature, PregeneratedPrimes, aux_info_gen, keygen,
-    security_level::SecurityLevel128, signing, supported_curves::Secp256k1,
+    security_level::SecurityLevel128, supported_curves::Secp256k1,
 };
 use rand::rngs::OsRng;
 use round_based::sim;
+
+mod presig_storage;
+
+use crate::presig_storage::StoredPresignature;
 
 fn main() {
     presignature_serde_sim_example();
@@ -19,7 +23,7 @@ fn basic_sim_example() {
     let incomplete = sim::run(n, |i, party| {
         let eid = eid;
         async move {
-            cggmp21::keygen::<Secp256k1>(eid, i, n)
+            cggmp24::keygen::<Secp256k1>(eid, i, n)
                 .start(&mut OsRng, party)
                 .await
         }
@@ -33,8 +37,8 @@ fn basic_sim_example() {
     let aux = sim::run(n, |i, party| {
         let eid = ExecutionId::new(b"aux eid");
         async move {
-            let primes = cggmp21::PregeneratedPrimes::<SecurityLevel128>::generate(&mut OsRng);
-            cggmp21::aux_info_gen(eid, i, n, primes)
+            let primes = cggmp24::PregeneratedPrimes::<SecurityLevel128>::generate(&mut OsRng);
+            cggmp24::aux_info_gen(eid, i, n, primes)
                 .start(&mut OsRng, party)
                 .await
         }
@@ -46,7 +50,7 @@ fn basic_sim_example() {
     let key_shares: Vec<_> = incomplete
         .into_iter()
         .zip(aux)
-        .map(|(k, a)| cggmp21::KeyShare::from_parts((k, a)).unwrap())
+        .map(|(k, a)| cggmp24::KeyShare::from_parts((k, a)).unwrap())
         .collect();
 
     // Sign with all parties (n-of-n)
@@ -55,8 +59,8 @@ fn basic_sim_example() {
         let eid = ExecutionId::new(b"sign eid");
         let key_share = key_shares[i as usize].clone();
         async move {
-            cggmp21::signing(eid, i, &(0..n).collect::<Vec<u16>>(), &key_share)
-                .sign(&mut OsRng, party, msg)
+            cggmp24::signing(eid, i, &(0..n).collect::<Vec<u16>>(), &key_share)
+                .sign(&mut OsRng, party, &msg)
                 .await
         }
     })
@@ -111,7 +115,7 @@ fn presignature_sim_example() {
     let key_shares: Vec<_> = incomplete
         .into_iter()
         .zip(aux)
-        .map(|(k, a)| cggmp21::KeyShare::from_parts((k, a)).unwrap())
+        .map(|(k, a)| cggmp24::KeyShare::from_parts((k, a)).unwrap())
         .collect();
 
     // 4) Generate presignatures (all 3 parties)
@@ -121,7 +125,7 @@ fn presignature_sim_example() {
         let key_share = key_shares[i as usize].clone();
         async move {
             let mut rng = OsRng;
-            signing(eid, i, &participants, &key_share)
+            cggmp24::signing(eid, i, &participants, &key_share)
                 .generate_presignature(&mut rng, party)
                 .await
         }
@@ -129,6 +133,7 @@ fn presignature_sim_example() {
     .unwrap()
     .expect_ok()
     .into_vec();
+    let commitment = presigs[0].1.clone(); // same for all parties; just take from first
 
     // 5) Message to sign
     let msg = DataToSign::digest::<sha2::Sha256>(b"hello 3-of-3");
@@ -136,11 +141,12 @@ fn presignature_sim_example() {
     // 6) Issue partial signatures
     let partials: Vec<_> = presigs
         .into_iter()
-        .map(|presig| presig.issue_partial_signature(msg))
+        .map(|presig| presig.0.issue_partial_signature(msg))
         .collect();
 
     // 7) Combine to full signature
-    let sig = PartialSignature::combine(&partials).expect("invalid partial signatures");
+    let sig =
+        PartialSignature::combine(&partials, &commitment, msg).expect("invalid partial signatures");
 
     // 8) Verify against the shared public key
     let public_key = key_shares[0].shared_public_key();
@@ -187,14 +193,14 @@ fn presignature_serde_sim_example() {
 
     // Load auxiliary info from file (MessagePack)
     let aux_file_content = fs::read("aux_info.msgpack").expect("read aux_info.msgpack");
-    let aux_loaded: Vec<cggmp21::key_share::AuxInfo<SecurityLevel128>> =
+    let aux_loaded: Vec<cggmp24::key_share::AuxInfo<SecurityLevel128>> =
         rmp_serde::from_slice(&aux_file_content).expect("deserialize aux from msgpack");
 
     // 3) Complete key shares
     let key_shares: Vec<_> = incomplete
         .into_iter()
         .zip(aux_loaded)
-        .map(|(k, a)| cggmp21::KeyShare::from_parts((k, a)).unwrap())
+        .map(|(k, a)| cggmp24::KeyShare::from_parts((k, a)).unwrap())
         .collect();
 
     // Save key shares to file (MessagePack)
@@ -204,7 +210,7 @@ fn presignature_serde_sim_example() {
 
     // Load key shares from file (MessagePack)
     let key_shares_file_content = fs::read("key_shares.msgpack").expect("read key_shares.msgpack");
-    let key_shares_loaded: Vec<cggmp21::key_share::KeyShare<Secp256k1, SecurityLevel128>> =
+    let key_shares_loaded: Vec<cggmp24::key_share::KeyShare<Secp256k1, SecurityLevel128>> =
         rmp_serde::from_slice(&key_shares_file_content)
             .expect("deserialize key_shares from msgpack");
 
@@ -215,7 +221,7 @@ fn presignature_serde_sim_example() {
         let key_share = key_shares_loaded[i as usize].clone();
         async move {
             let mut rng = OsRng;
-            signing(eid, i, &participants, &key_share)
+            cggmp24::signing(eid, i, &participants, &key_share)
                 .generate_presignature(&mut rng, party)
                 .await
         }
@@ -224,27 +230,36 @@ fn presignature_serde_sim_example() {
     .expect_ok()
     .into_vec();
 
+    let stored_presigs: Vec<StoredPresignature<Secp256k1>> = presigs
+        .into_iter()
+        .map(|(presig, public)| StoredPresignature { presig, public })
+        .collect();
+
     // Save presignatures to file (MessagePack)
-    let presigs_bytes = rmp_serde::to_vec(&presigs).expect("serialize presigs to msgpack");
+    let presigs_bytes = rmp_serde::to_vec(&stored_presigs).expect("serialize presigs to msgpack");
     fs::write("presignatures.msgpack", presigs_bytes).expect("write presignatures.msgpack");
 
     // Load presignatures from file (MessagePack)
     let presigs_file_content =
         fs::read("presignatures.msgpack").expect("read presignatures.msgpack");
-    let presigs_loaded: Vec<cggmp21::Presignature<Secp256k1>> =
+    let stored_presigs_loaded: Vec<StoredPresignature<Secp256k1>> =
         rmp_serde::from_slice(&presigs_file_content).expect("deserialize presigs from msgpack");
 
     // 5) Message to sign
     let msg = DataToSign::digest::<sha2::Sha256>(b"hello 3-of-3");
 
+    // save public data
+    let commitment = stored_presigs_loaded[0].public.clone(); // same for all parties; just take from first
+
     // 6) Issue partial signatures
-    let partials: Vec<_> = presigs_loaded
+    let partials: Vec<_> = stored_presigs_loaded
         .into_iter()
-        .map(|presig| presig.issue_partial_signature(msg))
+        .map(|stored_presig| stored_presig.presig.issue_partial_signature(msg))
         .collect();
 
     // 7) Combine to full signature
-    let sig = PartialSignature::combine(&partials).expect("invalid partial signatures");
+    let sig =
+        PartialSignature::combine(&partials, &commitment, msg).expect("invalid partial signatures");
 
     // 8) Verify against the shared public key
     let public_key = key_shares_loaded[0].shared_public_key();
