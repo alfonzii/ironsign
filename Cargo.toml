@@ -14,3 +14,4 @@ hex = "0.4.3"
 anyhow = "1.0.100"
 tokio = { version = "1.48.0", features = ["time", "rt-multi-thread", "macros", "sync"] }
 rmp-serde = "1.3.1"
+serde = "1.0.228"
