@@ -1,17 +1,18 @@
+use std::collections::VecDeque;
 use std::fs;
 use std::io;
 use std::path::Path;
 
 use cggmp24::{
     ExecutionId, PregeneratedPrimes, aux_info_gen, keygen, security_level::SecurityLevel128,
-    supported_curves::Secp256k1,
+    signing::Presignature, supported_curves::Secp256k1,
 };
 use rand::rngs::OsRng;
 use round_based::sim;
 
 // PresignaturePublicData does not derive Serialize/Deserialize,
-// so we wrap presignatures with our custom StoredPresignature type.
-use ironsign::presig_storage::StoredPresignature;
+// so we wrap "ppd" with our custom StoredPresignaturePublicData type.
+use ironsign::ppd_serializer::StoredPresignaturePublicData;
 
 /// Initializes the MPC system for `n` nodes with `k` pre-generated presignatures each.
 ///
@@ -98,8 +99,11 @@ fn regenerate_presignatures(
 
     // Each round of generate_presignature produces one presignature per party.
     // We run k rounds so every party accumulates k presignatures.
-    let mut presig_pools: Vec<Vec<StoredPresignature<Secp256k1>>> =
-        (0..n).map(|_| Vec::with_capacity(k as usize)).collect();
+    let mut presig_pools: Vec<VecDeque<Presignature<Secp256k1>>> = (0..n)
+        .map(|_| VecDeque::with_capacity(k as usize))
+        .collect();
+    let mut ppd_pool: VecDeque<StoredPresignaturePublicData<Secp256k1>> =
+        VecDeque::with_capacity(k as usize);
 
     for j in 0..k {
         println!("[presig] Generating presignature {}/{}...", j + 1, k);
@@ -122,7 +126,10 @@ fn regenerate_presignatures(
         .into_vec();
 
         for (i, (presig, public)) in presigs.into_iter().enumerate() {
-            presig_pools[i].push(StoredPresignature { presig, public });
+            presig_pools[i].push_back(presig);
+            if i == 0 {
+                ppd_pool.push_back(StoredPresignaturePublicData { public });
+            }
         }
     }
 
@@ -143,6 +150,17 @@ fn regenerate_presignatures(
             presig_path.display()
         );
     }
+
+    let ppd_path = output_dir.join("ppd_pool.msgpack");
+    if ppd_path.exists() {
+        fs::remove_file(&ppd_path).expect("delete old ppd_pool.msgpack");
+    }
+    let ppd_bytes = rmp_serde::to_vec(&ppd_pool).expect("serialize ppd_pool");
+    fs::write(&ppd_path, ppd_bytes).expect("write ppd_pool.msgpack");
+    println!(
+        "[presig] Exported shared public presignature data pool with {k} entries to {}",
+        ppd_path.display()
+    );
 
     println!("[presig] Regeneration complete.");
 }
