@@ -17,9 +17,9 @@ use ironsign::ppd_serializer::StoredPresignaturePublicData;
 /// Initializes the MPC system for `n` nodes with `k` pre-generated presignatures each.
 ///
 /// For each node `i` (0 ..  n), serializes and writes to `<output_dir>/node_<i>/`:
-///   - `aux_info.msgpack`    — auxiliary Paillier/Pedersen parameters
 ///   - `key_share.msgpack`   — complete ECDSA key share (includes aux info)
 ///   - `presig_pool.msgpack` — pool of `k` presignatures ready for offline signing
+///   - `ppd_pool.msgpack`    — shared pool of `k` PresignaturePublicData entries corresponding to the presignatures
 fn initialize(
     n: u16,
     output_dir: &Path,
@@ -38,12 +38,6 @@ fn initialize(
     .unwrap()
     .expect_ok()
     .into_vec();
-
-    // Serialize each node's aux_info before consuming it in KeyShare assembly
-    let aux_serialized: Vec<Vec<u8>> = aux
-        .iter()
-        .map(|a| rmp_serde::to_vec(a).expect("serialize aux_info"))
-        .collect();
 
     // ── 2) Distributed Key Generation ──────────────────────────────────
     println!("[init] Running DKG for {n} parties...");
@@ -71,16 +65,12 @@ fn initialize(
         let node_dir = output_dir.join(format!("node_{i}"));
         fs::create_dir_all(&node_dir).expect("create node output directory");
 
-        // Aux info
-        fs::write(node_dir.join("aux_info.msgpack"), &aux_serialized[i])
-            .expect("write aux_info.msgpack");
-
         // Key share
         let ks_bytes = rmp_serde::to_vec_named(&key_shares[i]).expect("serialize key_share");
         fs::write(node_dir.join("key_share.msgpack"), ks_bytes).expect("write key_share.msgpack");
 
         println!(
-            "[init] Node {i}: exported aux_info and key_share to {}",
+            "[init] Node {i}: exported key_share to {}",
             node_dir.display()
         );
     }
@@ -142,7 +132,7 @@ fn regenerate_presignatures(
             fs::remove_file(&presig_path).expect("delete old presig_pool.msgpack");
         }
 
-        let presig_bytes = rmp_serde::to_vec(&presig_pools[i]).expect("serialize presig_pool");
+        let presig_bytes = presig_pools[i].to_msgpack().expect("serialize presig_pool");
         fs::write(&presig_path, presig_bytes).expect("write presig_pool.msgpack");
 
         println!(
@@ -155,7 +145,7 @@ fn regenerate_presignatures(
     if ppd_path.exists() {
         fs::remove_file(&ppd_path).expect("delete old ppd_pool.msgpack");
     }
-    let ppd_bytes = rmp_serde::to_vec(&ppd_pool).expect("serialize ppd_pool");
+    let ppd_bytes = ppd_pool.to_msgpack().expect("serialize ppd_pool");
     fs::write(&ppd_path, ppd_bytes).expect("write ppd_pool.msgpack");
     println!(
         "[presig] Exported shared public presignature data pool with {k} entries to {}",

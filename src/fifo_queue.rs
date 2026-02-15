@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -25,5 +26,23 @@ impl<T> FifoQueue<T> {
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+}
+
+impl<T> FifoQueue<T>
+where
+    T: Serialize,
+{
+    pub fn to_msgpack(&self) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+        rmp_serde::to_vec(self)
+    }
+}
+
+impl<T> FifoQueue<T>
+where
+    T: DeserializeOwned,
+{
+    pub fn from_msgpack(bytes: &[u8]) -> Result<Self, rmp_serde::decode::Error> {
+        rmp_serde::from_slice(bytes)
     }
 }
