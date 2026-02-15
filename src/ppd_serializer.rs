@@ -1,3 +1,7 @@
+#![allow(non_snake_case)]
+// We allow non-snake-case fields in this file to match the naming in PresignaturePublicData,
+//which is more concise and readable.
+
 use serde::{Deserialize, Serialize};
 
 use cggmp24::generic_ec::Curve;
