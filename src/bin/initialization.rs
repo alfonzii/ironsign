@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -10,6 +9,7 @@ use cggmp24::{
 use rand::rngs::OsRng;
 use round_based::sim;
 
+use ironsign::fifo_queue::FifoQueue;
 // PresignaturePublicData does not derive Serialize/Deserialize,
 // so we wrap "ppd" with our custom StoredPresignaturePublicData type.
 use ironsign::ppd_serializer::StoredPresignaturePublicData;
@@ -99,11 +99,11 @@ fn regenerate_presignatures(
 
     // Each round of generate_presignature produces one presignature per party.
     // We run k rounds so every party accumulates k presignatures.
-    let mut presig_pools: Vec<VecDeque<Presignature<Secp256k1>>> = (0..n)
-        .map(|_| VecDeque::with_capacity(k as usize))
+    let mut presig_pools: Vec<FifoQueue<Presignature<Secp256k1>>> = (0..n)
+        .map(|_| FifoQueue::with_capacity(k as usize))
         .collect();
-    let mut ppd_pool: VecDeque<StoredPresignaturePublicData<Secp256k1>> =
-        VecDeque::with_capacity(k as usize);
+    let mut ppd_pool: FifoQueue<StoredPresignaturePublicData<Secp256k1>> =
+        FifoQueue::with_capacity(k as usize);
 
     for j in 0..k {
         println!("[presig] Generating presignature {}/{}...", j + 1, k);
@@ -126,9 +126,9 @@ fn regenerate_presignatures(
         .into_vec();
 
         for (i, (presig, public)) in presigs.into_iter().enumerate() {
-            presig_pools[i].push_back(presig);
+            presig_pools[i].push(presig);
             if i == 0 {
-                ppd_pool.push_back(StoredPresignaturePublicData { public });
+                ppd_pool.push(StoredPresignaturePublicData { public });
             }
         }
     }
