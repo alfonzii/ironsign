@@ -141,12 +141,12 @@ fn main() {
         let partial_sig_filename = format!("partial_sig_{sig_counter}.msgpack");
         let partial_sig_path = node_dir.join(&partial_sig_filename);
         let partial_sig_bytes =
-            rmp_serde::to_vec_named(&partial_signature).expect("serialize partial signature");
+            rmp_serde::to_vec(&partial_signature).expect("serialize partial signature");
         fs::write(&partial_sig_path, partial_sig_bytes).expect("write partial signature file");
 
         let ppd_filename = format!("ppd_{sig_counter}.msgpack");
         let ppd_path = node_dir.join(&ppd_filename);
-        let ppd_bytes = rmp_serde::to_vec_named(&ppd).expect("serialize ppd");
+        let ppd_bytes = rmp_serde::to_vec(&ppd).expect("serialize ppd");
         fs::write(&ppd_path, ppd_bytes).expect("write ppd file");
 
         // ── Delete payload file ────────────────────────────────────────
