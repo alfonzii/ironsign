@@ -14,16 +14,9 @@ use ironsign::fifo_queue::FifoQueue;
 // so we wrap "ppd" with our custom StoredPresignaturePublicData type.
 use ironsign::ppd_serializer::StoredPresignaturePublicData;
 
-/// Initializes the MPC system for `n` nodes with `k` pre-generated presignatures each.
-///
-/// For each node `i` (0 ..  n), serializes and writes to `<output_dir>/node_<i>/`:
-///   - `key_share.msgpack`   — complete ECDSA key share (includes aux info)
-///   - `presig_pool.msgpack` — pool of `k` presignatures ready for offline signing
-///   - `ppd_pool.msgpack`    — shared pool of `k` PresignaturePublicData entries corresponding to the presignatures
-fn initialize(
-    n: u16,
-    output_dir: &Path,
-) -> Vec<cggmp24::key_share::KeyShare<Secp256k1, SecurityLevel128>> {
+type KeyShare = cggmp24::key_share::KeyShare<Secp256k1, SecurityLevel128>;
+
+fn generate_and_store_key_shares(n: u16, key_shares_dir: &Path) -> Vec<KeyShare> {
     // ── 1) Auxiliary Information Generation ─────────────────────────────
     println!("[init] Generating auxiliary info...");
     let eid_aux = ExecutionId::new(b"init-aux");
@@ -60,31 +53,107 @@ fn initialize(
         .map(|(inc, a)| cggmp24::KeyShare::from_parts((inc, a)).expect("assemble key share"))
         .collect();
 
-    // ── 4) Export Per-Node Static Data ──────────────────────────────────
-    for i in 0..n as usize {
-        let node_dir = output_dir.join(format!("node_{i}"));
-        fs::create_dir_all(&node_dir).expect("create node output directory");
+    // ── 4) Export key shares to shared folder ───────────────────────────
+    fs::create_dir_all(key_shares_dir).expect("create key_shares directory");
 
-        // Key share
+    for i in 0..n as usize {
+        let key_share_path = key_shares_dir.join(format!("key_share_{i}.msgpack"));
         let ks_bytes = rmp_serde::to_vec_named(&key_shares[i]).expect("serialize key_share");
-        fs::write(node_dir.join("key_share.msgpack"), ks_bytes).expect("write key_share.msgpack");
+        fs::write(&key_share_path, ks_bytes).expect("write key_share msgpack");
 
         println!(
             "[init] Node {i}: exported key_share to {}",
-            node_dir.display()
+            key_share_path.display()
         );
     }
 
-    println!("[init] Static initialization complete for {n} nodes.");
+    println!(
+        "[init] Key share initialization complete for {n} nodes in {}.",
+        key_shares_dir.display()
+    );
     key_shares
 }
 
-fn regenerate_presignatures(
-    n: u16,
-    k: u16,
-    output_dir: &Path,
-    key_shares: &[cggmp24::key_share::KeyShare<Secp256k1, SecurityLevel128>],
-) {
+fn key_share_file_count(key_shares_dir: &Path) -> usize {
+    fs::read_dir(key_shares_dir)
+        .expect("read key_shares directory")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| name.starts_with("key_share_") && name.ends_with(".msgpack"))
+                    .unwrap_or(false)
+        })
+        .count()
+}
+
+fn load_key_shares(n: u16, key_shares_dir: &Path) -> Result<Vec<KeyShare>, String> {
+    let existing = key_share_file_count(key_shares_dir);
+    if existing != n as usize {
+        return Err(format!(
+            "found {existing} key shares in {}, expected {n}",
+            key_shares_dir.display()
+        ));
+    }
+
+    let mut key_shares = Vec::with_capacity(n as usize);
+    for i in 0..n as usize {
+        let key_share_path = key_shares_dir.join(format!("key_share_{i}.msgpack"));
+        if !key_share_path.exists() {
+            return Err(format!(
+                "missing expected key share file {}",
+                key_share_path.display()
+            ));
+        }
+
+        let bytes = fs::read(&key_share_path)
+            .map_err(|e| format!("failed reading {}: {e}", key_share_path.display()))?;
+        let key_share: KeyShare = rmp_serde::from_slice(&bytes)
+            .map_err(|e| format!("failed deserializing {}: {e}", key_share_path.display()))?;
+        key_shares.push(key_share);
+    }
+
+    Ok(key_shares)
+}
+
+/// Initializes key shares for `n` nodes.
+///
+/// Reuses `output_dir/key_shares` when possible:
+/// - If absent, generates and stores fresh key shares
+/// - If present and count matches `n`, loads existing key shares
+/// - If present but count mismatches `n` (or files are invalid), informs user, removes folder,
+///   then regenerates key shares
+fn initialize(n: u16, output_dir: &Path) -> Vec<KeyShare> {
+    let key_shares_dir = output_dir.join("key_shares");
+
+    if !key_shares_dir.exists() {
+        println!("[init] No existing key_shares folder found. Generating fresh key shares...");
+        return generate_and_store_key_shares(n, &key_shares_dir);
+    }
+
+    match load_key_shares(n, &key_shares_dir) {
+        Ok(key_shares) => {
+            println!(
+                "[init] Loaded {} existing key shares from {}.",
+                key_shares.len(),
+                key_shares_dir.display()
+            );
+            key_shares
+        }
+        Err(reason) => {
+            println!(
+                "[init] Existing key shares cannot be reused ({reason}). Removing and regenerating..."
+            );
+            fs::remove_dir_all(&key_shares_dir).expect("remove stale key_shares folder");
+            generate_and_store_key_shares(n, &key_shares_dir)
+        }
+    }
+}
+
+fn regenerate_presignatures(n: u16, k: u16, output_dir: &Path, key_shares: &[KeyShare]) {
     let participants: Vec<u16> = (0..n).collect();
 
     // Each round of generate_presignature produces one presignature per party.
