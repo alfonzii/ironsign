@@ -16,6 +16,8 @@ use ironsign::ppd_serializer::StoredPresignaturePublicData;
 
 type KeyShare = cggmp24::key_share::KeyShare<Secp256k1, SecurityLevel128>;
 
+/// Runs AuxInfo + DKG for `n` parties, assembles complete key shares,
+/// and persists them into `key_shares_dir/key_share_<i>.msgpack`.
 fn generate_and_store_key_shares(n: u16, key_shares_dir: &Path) -> Vec<KeyShare> {
     // ── 1) Auxiliary Information Generation ─────────────────────────────
     println!("[init] Generating auxiliary info...");
@@ -74,6 +76,9 @@ fn generate_and_store_key_shares(n: u16, key_shares_dir: &Path) -> Vec<KeyShare>
     key_shares
 }
 
+/// Counts files matching `key_share_*.msgpack` in `key_shares_dir`.
+///
+/// This is used as a fast sanity check before trying to deserialize each file.
 fn key_share_file_count(key_shares_dir: &Path) -> usize {
     fs::read_dir(key_shares_dir)
         .expect("read key_shares directory")
@@ -90,6 +95,10 @@ fn key_share_file_count(key_shares_dir: &Path) -> usize {
         .count()
 }
 
+/// Loads exactly `n` key shares from `key_shares_dir` in index order.
+///
+/// Returns an error if the number of files does not match `n`, any expected
+/// file is missing, or deserialization fails.
 fn load_key_shares(n: u16, key_shares_dir: &Path) -> Result<Vec<KeyShare>, String> {
     let existing = key_share_file_count(key_shares_dir);
     if existing != n as usize {
@@ -153,6 +162,13 @@ fn initialize(n: u16, output_dir: &Path) -> Vec<KeyShare> {
     }
 }
 
+/// Generates and exports fresh presignatures for all `n` nodes.
+///
+/// Per-node output:
+/// - `node_<i>/presig_pool.msgpack` (FIFO of private presignatures)
+///
+/// Shared output:
+/// - `ppd_pool.msgpack` (FIFO of public presignature data)
 fn regenerate_presignatures(n: u16, k: u16, output_dir: &Path, key_shares: &[KeyShare]) {
     let participants: Vec<u16> = (0..n).collect();
 
