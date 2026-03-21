@@ -25,14 +25,14 @@ enum NodeCommand {
     },
 }
 
-// TODO: pridat komentare k funkciam
-
 #[derive(Clone)]
 struct NodeHandle {
     node_id: u16,
     tx: mpsc::UnboundedSender<NodeCommand>,
 }
 
+/// Loads a node's presignature pool from `node_dir/presig_pool.msgpack`,
+/// then removes the consumed pool file and the now-empty `node_dir`.
 fn load_presig_pool(node_dir: &Path) -> NodeResult<FifoQueue<Presignature<Secp256k1>>> {
     let presig_path = node_dir.join("presig_pool.msgpack");
     let bytes = fs::read(&presig_path)
@@ -47,6 +47,11 @@ fn load_presig_pool(node_dir: &Path) -> NodeResult<FifoQueue<Presignature<Secp25
     Ok(pool)
 }
 
+/// Spawns one online MPC node task.
+///
+/// The task accepts coordinator commands via channel:
+/// - `Init`: loads presignature pool from `input_dir/node_<id>`
+/// - `Sign`: pops one presignature and returns a partial signature for payload
 fn spawn_online_node(node_id: u16, input_dir: PathBuf) -> NodeHandle {
     let (tx, mut rx) = mpsc::unbounded_channel::<NodeCommand>();
 
@@ -96,6 +101,7 @@ fn spawn_online_node(node_id: u16, input_dir: PathBuf) -> NodeHandle {
     NodeHandle { tx, node_id }
 }
 
+/// Sends `Init` to one node and awaits pool-size response.
 async fn send_init(handle: &NodeHandle) -> NodeResult<usize> {
     let (reply_tx, reply_rx) = oneshot::channel();
     handle
@@ -108,6 +114,7 @@ async fn send_init(handle: &NodeHandle) -> NodeResult<usize> {
         .map_err(|e| format!("init response from node {} failed: {e}", handle.node_id))?
 }
 
+/// Sends `Sign` command with payload bytes to one node and awaits partial signature.
 async fn send_sign(
     handle: &NodeHandle,
     payload: Vec<u8>,
@@ -126,6 +133,7 @@ async fn send_sign(
         .map_err(|e| format!("sign response from node {} failed: {e}", handle.node_id))?
 }
 
+/// Reads one trimmed line from stdin after printing prompt.
 fn read_line(prompt: &str) -> String {
     println!("{prompt}");
     let mut input = String::new();
@@ -135,6 +143,11 @@ fn read_line(prompt: &str) -> String {
     input.trim().to_string()
 }
 
+/// Initializes all online nodes, retrying every 10 seconds until:
+/// 1) every node initializes successfully, and
+/// 2) all reported pool sizes are equal.
+///
+/// Returns the shared presignature pool size.
 async fn init_all_nodes_with_retry(handles: &[NodeHandle]) -> usize {
     loop {
         let mut nodes_pool_sizes: Vec<usize> = Vec::with_capacity(handles.len());
@@ -183,6 +196,11 @@ async fn init_all_nodes_with_retry(handles: &[NodeHandle]) -> usize {
     }
 }
 
+/// Loads offline node outputs for one round from `input_dir/node_0`:
+/// - `offline_partial_sig_<round>.msgpack`
+/// - `ppd_<round>.msgpack`
+///
+/// After loading, it removes both files and the `node_0` directory.
 fn load_offline_partial_and_ppd(
     input_dir: &Path,
     round: u64,
@@ -213,6 +231,8 @@ fn load_offline_partial_and_ppd(
     Ok((partial_sig, stored_ppd))
 }
 
+/// Serializes and writes final combined signature to
+/// `output_dir/signatures/signature_<round>.msgpack`.
 fn export_signature(
     output_dir: &Path,
     round: u64,
