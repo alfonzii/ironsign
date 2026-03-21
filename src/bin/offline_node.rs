@@ -11,7 +11,7 @@ use ironsign::ppd_serializer::StoredPresignaturePublicData;
 ///
 /// Expects:
 ///   - `<node_dir>/presig_pool.msgpack`
-///   - `<node_dir>/../ppd_pool.msgpack`  (shared, one level above node dir)
+///   - `<node_dir>/ppd_pool.msgpack`
 ///
 /// Asserts both pools have equal length.
 fn load_pools(
@@ -27,11 +27,8 @@ fn load_pools(
     let presig_pool: FifoQueue<Presignature<Secp256k1>> =
         FifoQueue::from_msgpack(&presig_bytes).expect("deserialize presig_pool");
 
-    // Load shared PPD pool (one level up from node_dir)
-    let ppd_path = node_dir
-        .parent()
-        .expect("node_dir must have a parent directory")
-        .join("ppd_pool.msgpack");
+    // Load shared PPD pool from node_0 folder
+    let ppd_path = node_dir.join("ppd_pool.msgpack");
     let ppd_bytes = fs::read(&ppd_path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", ppd_path.display()));
     let ppd_pool: FifoQueue<StoredPresignaturePublicData<Secp256k1>> =
@@ -137,6 +134,7 @@ fn main() {
         // ── Issue partial signature ────────────────────────────────────
         let partial_signature = presig.issue_partial_signature(msg);
 
+        // TODO: musim vytvorit celu cestu ked zapisujem do suboru, pretoze ked budem prenasat `node_0` nazad do runtime, tak ten folder mi zmizne z offline_node a tym padom ked budem chciet do node_0 zapisat tak dostanem error
         // ── Serialize and export partial signature + PPD as separate files ─
         let partial_sig_filename = format!("offline_partial_sig_{sig_counter}.msgpack");
         let partial_sig_path = node_dir.join(&partial_sig_filename);

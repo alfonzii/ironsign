@@ -167,8 +167,8 @@ fn initialize(n: u16, output_dir: &Path) -> Vec<KeyShare> {
 /// Per-node output:
 /// - `node_<i>/presig_pool.msgpack` (FIFO of private presignatures)
 ///
-/// Shared output:
-/// - `ppd_pool.msgpack` (FIFO of public presignature data)
+/// Node 0 output:
+/// - `node_0/ppd_pool.msgpack` (FIFO of public presignature data)
 fn regenerate_presignatures(n: u16, k: u16, output_dir: &Path, key_shares: &[KeyShare]) {
     let participants: Vec<u16> = (0..n).collect();
 
@@ -226,7 +226,7 @@ fn regenerate_presignatures(n: u16, k: u16, output_dir: &Path, key_shares: &[Key
         );
     }
 
-    let ppd_path = output_dir.join("ppd_pool.msgpack");
+    let ppd_path = output_dir.join("node_0").join("ppd_pool.msgpack");
     if ppd_path.exists() {
         fs::remove_file(&ppd_path).expect("delete old ppd_pool.msgpack");
     }
