@@ -190,7 +190,7 @@ fn load_offline_partial_and_ppd(
     StoredPresignaturePublicData<Secp256k1>,
 )> {
     let node0_dir = output_dir.join("node_0");
-    let partial_path = node0_dir.join(format!("partial_sig_{round}.msgpack")); // TODO: asi prepisat potom na offline_partial_sig...
+    let partial_path = node0_dir.join(format!("offline_partial_sig_{round}.msgpack"));
     let ppd_path = node0_dir.join(format!("ppd_{round}.msgpack"));
 
     let partial_bytes = fs::read(&partial_path)
