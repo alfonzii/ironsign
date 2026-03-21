@@ -4,16 +4,22 @@ set -euo pipefail
 # Directory where this script lives (so "same directory" even if run from elsewhere)
 DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-# Random filename
-# NAME="payload_$(date +%Y%m%d_%H%M%S)_$RANDOM.bin"
-NAME="payload.bin"
-OUT="$DIR/$NAME"
-
 # Size: 4 KiB
 SIZE=4096
 
-# Generate random bytes
-# Linux: /dev/urandom is standard and fast
-dd if=/dev/urandom of="$OUT" bs=1 count="$SIZE" status=none
+# Get number of payloads from argument, default to 1
+NUM_PAYLOADS="${1:-1}"
 
-echo "Created: $OUT ($(stat -c%s "$OUT") bytes)"
+# Validate input
+if ! [[ "$NUM_PAYLOADS" =~ ^[0-9]+$ ]] || [ "$NUM_PAYLOADS" -lt 1 ]; then
+    echo "Error: argument must be a positive integer" >&2
+    exit 1
+fi
+
+# Generate n payloads
+for ((i=0; i<NUM_PAYLOADS; i++)); do
+    NAME="payload_$i.bin"
+    OUT="$DIR/$NAME"
+    dd if=/dev/urandom of="$OUT" bs=1 count="$SIZE" status=none
+    echo "Created: $OUT ($(stat -c%s "$OUT") bytes)"
+done
