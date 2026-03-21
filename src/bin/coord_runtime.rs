@@ -25,6 +25,8 @@ enum NodeCommand {
     },
 }
 
+// TODO: pridat komentare k funkciam
+
 #[derive(Clone)]
 struct NodeHandle {
     node_id: u16,
@@ -134,7 +136,7 @@ fn read_line(prompt: &str) -> String {
 
 async fn init_all_nodes_with_retry(handles: &[NodeHandle]) -> usize {
     loop {
-        let mut all_sizes: Vec<usize> = Vec::with_capacity(handles.len());
+        let mut all_sizes: Vec<usize> = Vec::with_capacity(handles.len()); // TODO: zmenit nazov all_sizes
         let mut failed_nodes: Vec<(u16, String)> = Vec::new();
 
         for handle in handles {
@@ -151,6 +153,7 @@ async fn init_all_nodes_with_retry(handles: &[NodeHandle]) -> usize {
         }
 
         if !failed_nodes.is_empty() {
+            // TODO: ak failne jeden, tak sa loopuje odznova cez vsetky - zhodnotit ci to tak ma byt, alebo to dame ze sa bude retryovat len ten failnuty.
             for (node_id, err) in &failed_nodes {
                 eprintln!("[coord] Init failed for node {node_id}: {err}");
             }
@@ -180,31 +183,31 @@ async fn init_all_nodes_with_retry(handles: &[NodeHandle]) -> usize {
 }
 
 fn load_offline_partial_and_ppd(
-    output_dir: &Path,
+    output_dir: &Path, // TODO: nie len v tejto fun, ale vsade mam output_dir jak param. V skutocnosti ale je to input dir ne? nie output dir. output je to ked vypisujem, nie ked loadujem
     round: u64,
 ) -> NodeResult<(
     PartialSignature<Secp256k1>,
     StoredPresignaturePublicData<Secp256k1>,
 )> {
     let node0_dir = output_dir.join("node_0");
-    let partial_path = node0_dir.join(format!("partial_sig_{round}.msgpack"));
+    let partial_path = node0_dir.join(format!("partial_sig_{round}.msgpack")); // TODO: asi prepisat potom na offline_partial_sig...
     let ppd_path = node0_dir.join(format!("ppd_{round}.msgpack"));
 
     let partial_bytes = fs::read(&partial_path)
         .map_err(|e| format!("read {} failed: {e}", partial_path.display()))?;
-    let partial: PartialSignature<Secp256k1> = rmp_serde::from_slice(&partial_bytes)
+    let partial_sig: PartialSignature<Secp256k1> = rmp_serde::from_slice(&partial_bytes)
         .map_err(|e| format!("deserialize {} failed: {e}", partial_path.display()))?;
 
     let ppd_bytes =
         fs::read(&ppd_path).map_err(|e| format!("read {} failed: {e}", ppd_path.display()))?;
-    let ppd: StoredPresignaturePublicData<Secp256k1> = rmp_serde::from_slice(&ppd_bytes)
+    let stored_ppd: StoredPresignaturePublicData<Secp256k1> = rmp_serde::from_slice(&ppd_bytes)
         .map_err(|e| format!("deserialize {} failed: {e}", ppd_path.display()))?;
 
     fs::remove_file(&partial_path)
         .map_err(|e| format!("delete {} failed: {e}", partial_path.display()))?;
     fs::remove_file(&ppd_path).map_err(|e| format!("delete {} failed: {e}", ppd_path.display()))?;
 
-    Ok((partial, ppd))
+    Ok((partial_sig, stored_ppd))
 }
 
 fn export_signature(
@@ -217,7 +220,7 @@ fn export_signature(
         .map_err(|e| format!("create {} failed: {e}", sig_dir.display()))?;
 
     let sig_path = sig_dir.join(format!("signature_{round}.msgpack"));
-    let bytes = rmp_serde::to_vec_named(signature)
+    let bytes = rmp_serde::to_vec_named(signature) // TODO: zistit ci treba "named", ci nestaci pure
         .map_err(|e| format!("serialize signature failed: {e}"))?;
     fs::write(&sig_path, bytes).map_err(|e| format!("write {} failed: {e}", sig_path.display()))?;
     Ok(sig_path)

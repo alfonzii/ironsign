@@ -157,7 +157,7 @@ fn regenerate_presignatures(n: u16, k: u16, output_dir: &Path, key_shares: &[Key
     let participants: Vec<u16> = (0..n).collect();
 
     // Each round of generate_presignature produces one presignature per party.
-    // We run k rounds so every party accumulates k presignatures.
+    // We run `k` rounds so every party accumulates `k` presignatures.
     let mut presig_pools: Vec<FifoQueue<Presignature<Secp256k1>>> = (0..n)
         .map(|_| FifoQueue::with_capacity(k as usize))
         .collect();

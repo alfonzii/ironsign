@@ -138,7 +138,7 @@ fn main() {
         let partial_signature = presig.issue_partial_signature(msg);
 
         // ── Serialize and export partial signature + PPD as separate files ─
-        let partial_sig_filename = format!("partial_sig_{sig_counter}.msgpack");
+        let partial_sig_filename = format!("partial_sig_{sig_counter}.msgpack"); // TODO: urovnat nazvy partial signatures (pozriet ako ma coord runtime)
         let partial_sig_path = node_dir.join(&partial_sig_filename);
         let partial_sig_bytes =
             rmp_serde::to_vec(&partial_signature).expect("serialize partial signature");
