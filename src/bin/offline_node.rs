@@ -47,25 +47,38 @@ fn load_pools(
         presig_pool.len(),
         ppd_pool.len()
     );
+    println!("[offline-node] Deleting pool files and folder after loading.");
 
     fs::remove_file(&presig_path).expect("delete presig_pool file after loading");
     fs::remove_file(&ppd_path).expect("delete ppd_pool file after loading");
+    fs::remove_dir(node_dir).expect("delete node directory after loading pools");
 
     (presig_pool, ppd_pool)
 }
 
 fn main() {
-    let node_dir = std::env::args()
+    let input_dir = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "./output/node_0".to_string()); // TODO: delete output, because it is assumed to run independently
-    let node_dir = PathBuf::from(node_dir);
+        .unwrap_or_else(|| "./output".to_string()); // TODO: to input
+    let output_dir = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| "./output".to_string());
+
+    let input_dir = PathBuf::from(input_dir);
+    let output_dir = PathBuf::from(output_dir);
+
+    let input_node_dir = input_dir.join("node_0");
+    let output_node_dir = output_dir.join("node_0");
 
     println!(
-        "[offline-node] Initializing offline node from {}...",
-        node_dir.display()
+        "[offline-node] Initializing offline node from input {} and output set to {}...",
+        input_node_dir.display(),
+        output_dir.display()
     );
 
-    let (mut presig_pool, mut ppd_pool) = load_pools(&node_dir);
+    fs::create_dir_all(&output_node_dir).expect("create output node_0 directory");
+
+    let (mut presig_pool, mut ppd_pool) = load_pools(&input_node_dir);
 
     let mut sig_counter: u64 = 0;
 
@@ -82,7 +95,7 @@ fn main() {
                 .read_line(&mut input)
                 .expect("read ENTER from stdin");
 
-            let (new_presig, new_ppd) = load_pools(&node_dir);
+            let (new_presig, new_ppd) = load_pools(&input_node_dir);
             presig_pool = new_presig;
             ppd_pool = new_ppd;
             continue;
@@ -93,30 +106,33 @@ fn main() {
             "[offline-node] Waiting for payload to sign ({} presignatures remaining).",
             presig_pool.len()
         );
-        println!("[offline-node] Enter path to payload file:");
+        println!(
+            "[offline-node] Enter payload file name from input folder {}:",
+            input_dir.display()
+        );
 
         let mut input = String::new();
         io::stdin()
             .read_line(&mut input)
             .expect("read payload path from stdin");
-        let payload_path = input.trim();
+        let payload_name = input.trim();
 
-        if payload_path.is_empty() {
-            eprintln!("[offline-node] Error: no payload path provided. Try again.");
+        if payload_name.is_empty() {
+            eprintln!("[offline-node] Error: no payload file name provided. Try again.");
             continue;
         }
 
-        let payload_file = Path::new(payload_path);
+        let payload_file = input_dir.join(payload_name);
         if !payload_file.exists() {
             eprintln!(
                 "[offline-node] Error: payload file '{}' not found. Try again.",
-                payload_path
+                payload_file.display()
             );
             continue;
         }
 
         // ── Read raw payload bytes ─────────────────────────────────────
-        let payload_bytes = fs::read(payload_file).expect("read payload file");
+        let payload_bytes = fs::read(&payload_file).expect("read payload file");
         println!(
             "[offline-node] Read {} bytes from payload.",
             payload_bytes.len()
@@ -134,21 +150,23 @@ fn main() {
         // ── Issue partial signature ────────────────────────────────────
         let partial_signature = presig.issue_partial_signature(msg);
 
-        // TODO: musim vytvorit celu cestu ked zapisujem do suboru, pretoze ked budem prenasat `node_0` nazad do runtime, tak ten folder mi zmizne z offline_node a tym padom ked budem chciet do node_0 zapisat tak dostanem error
+        // Ensure output node directory exists even if it was removed externally.
+        fs::create_dir_all(&output_node_dir).expect("recreate output node_0 directory");
+
         // ── Serialize and export partial signature + PPD as separate files ─
         let partial_sig_filename = format!("offline_partial_sig_{sig_counter}.msgpack");
-        let partial_sig_path = node_dir.join(&partial_sig_filename);
+        let partial_sig_path = output_node_dir.join(&partial_sig_filename);
         let partial_sig_bytes =
             rmp_serde::to_vec(&partial_signature).expect("serialize partial signature");
         fs::write(&partial_sig_path, partial_sig_bytes).expect("write partial signature file");
 
         let ppd_filename = format!("ppd_{sig_counter}.msgpack");
-        let ppd_path = node_dir.join(&ppd_filename);
+        let ppd_path = output_node_dir.join(&ppd_filename);
         let ppd_bytes = rmp_serde::to_vec(&ppd).expect("serialize ppd");
         fs::write(&ppd_path, ppd_bytes).expect("write ppd file");
 
         // ── Delete payload file ────────────────────────────────────────
-        fs::remove_file(payload_file).expect("delete payload file");
+        fs::remove_file(&payload_file).expect("delete payload file");
 
         sig_counter += 1;
         println!(

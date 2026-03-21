@@ -42,15 +42,16 @@ fn load_presig_pool(node_dir: &Path) -> NodeResult<FifoQueue<Presignature<Secp25
 
     fs::remove_file(&presig_path)
         .map_err(|e| format!("delete {} failed: {e}", presig_path.display()))?;
+    fs::remove_dir(node_dir).map_err(|e| format!("delete {} failed: {e}", node_dir.display()))?;
 
     Ok(pool)
 }
 
-fn spawn_online_node(node_id: u16, output_dir: PathBuf) -> NodeHandle {
+fn spawn_online_node(node_id: u16, input_dir: PathBuf) -> NodeHandle {
     let (tx, mut rx) = mpsc::unbounded_channel::<NodeCommand>();
 
     tokio::spawn(async move {
-        let node_dir = output_dir.join(format!("node_{node_id}"));
+        let node_dir = input_dir.join(format!("node_{node_id}"));
         let mut presig_pool: Option<FifoQueue<Presignature<Secp256k1>>> = None;
 
         while let Some(cmd) = rx.recv().await {
@@ -183,13 +184,13 @@ async fn init_all_nodes_with_retry(handles: &[NodeHandle]) -> usize {
 }
 
 fn load_offline_partial_and_ppd(
-    output_dir: &Path, // TODO: nie len v tejto fun, ale vsade mam output_dir jak param. V skutocnosti ale je to input dir ne? nie output dir. output je to ked vypisujem, nie ked loadujem
+    input_dir: &Path,
     round: u64,
 ) -> NodeResult<(
     PartialSignature<Secp256k1>,
     StoredPresignaturePublicData<Secp256k1>,
 )> {
-    let node0_dir = output_dir.join("node_0");
+    let node0_dir = input_dir.join("node_0");
     let partial_path = node0_dir.join(format!("offline_partial_sig_{round}.msgpack"));
     let ppd_path = node0_dir.join(format!("ppd_{round}.msgpack"));
 
@@ -206,6 +207,8 @@ fn load_offline_partial_and_ppd(
     fs::remove_file(&partial_path)
         .map_err(|e| format!("delete {} failed: {e}", partial_path.display()))?;
     fs::remove_file(&ppd_path).map_err(|e| format!("delete {} failed: {e}", ppd_path.display()))?;
+    fs::remove_dir(&node0_dir)
+        .map_err(|e| format!("delete {} failed: {e}", node0_dir.display()))?;
 
     Ok((partial_sig, stored_ppd))
 }
@@ -232,9 +235,14 @@ async fn main() {
         .nth(1)
         .and_then(|s| s.parse().ok())
         .unwrap_or(3);
-    let output_dir = std::env::args()
+    let input_dir = std::env::args()
         .nth(2)
+        .unwrap_or_else(|| "./output".to_string()); // TODO: to input
+    let output_dir = std::env::args()
+        .nth(3)
         .unwrap_or_else(|| "./output".to_string());
+
+    let input_dir = PathBuf::from(input_dir);
     let output_dir = PathBuf::from(output_dir);
 
     if n < 2 {
@@ -243,10 +251,15 @@ async fn main() {
     }
 
     let handles: Vec<NodeHandle> = (1..n)
-        .map(|node_id| spawn_online_node(node_id, output_dir.clone()))
+        .map(|node_id| spawn_online_node(node_id, input_dir.clone()))
         .collect();
 
-    println!("[coord] Spawned {} online nodes.", handles.len());
+    println!(
+        "[coord] Spawned {} online nodes (input: {}, output: {}).",
+        handles.len(),
+        input_dir.display(),
+        output_dir.display()
+    );
 
     let mut remaining_presigs = init_all_nodes_with_retry(&handles).await;
     println!(
@@ -269,13 +282,13 @@ async fn main() {
             );
         }
 
-        let payload_path = read_line("[coord] Enter payload file path:");
-        if payload_path.is_empty() {
-            eprintln!("[coord] Empty payload path. Try again.");
+        let payload_name = read_line("[coord] Enter payload file name from input directory:");
+        if payload_name.is_empty() {
+            eprintln!("[coord] Empty payload file name. Try again.");
             continue;
         }
 
-        let payload_path = PathBuf::from(&payload_path);
+        let payload_path = input_dir.join(&payload_name);
         let payload = match fs::read(&payload_path) {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -323,7 +336,7 @@ async fn main() {
 
         let (offline_partial, ppd) = loop {
             let _ = read_line("");
-            match load_offline_partial_and_ppd(&output_dir, round) {
+            match load_offline_partial_and_ppd(&input_dir, round) {
                 Ok(values) => break values,
                 Err(err) => {
                     eprintln!(
