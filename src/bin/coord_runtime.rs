@@ -136,7 +136,7 @@ fn read_line(prompt: &str) -> String {
 
 async fn init_all_nodes_with_retry(handles: &[NodeHandle]) -> usize {
     loop {
-        let mut all_sizes: Vec<usize> = Vec::with_capacity(handles.len()); // TODO: zmenit nazov all_sizes
+        let mut nodes_pool_sizes: Vec<usize> = Vec::with_capacity(handles.len());
         let mut failed_nodes: Vec<(u16, String)> = Vec::new();
 
         for handle in handles {
@@ -146,7 +146,7 @@ async fn init_all_nodes_with_retry(handles: &[NodeHandle]) -> usize {
                         "[coord] Node {} initialized with presig pool size {}.",
                         handle.node_id, size
                     );
-                    all_sizes.push(size);
+                    nodes_pool_sizes.push(size);
                 }
                 Err(err) => failed_nodes.push((handle.node_id, err)),
             }
@@ -162,11 +162,11 @@ async fn init_all_nodes_with_retry(handles: &[NodeHandle]) -> usize {
             continue;
         }
 
-        let first = all_sizes[0];
-        if all_sizes.iter().any(|&size| size != first) {
+        let first = nodes_pool_sizes[0];
+        if nodes_pool_sizes.iter().any(|&size| size != first) {
             eprintln!(
                 "[coord] Init mismatch: online nodes returned different pool sizes: {:?}",
-                all_sizes
+                nodes_pool_sizes
             );
             println!("[coord] Retrying initialization in 10 seconds...");
             sleep(Duration::from_secs(10)).await;
@@ -174,7 +174,7 @@ async fn init_all_nodes_with_retry(handles: &[NodeHandle]) -> usize {
         }
 
         assert!(
-            all_sizes.iter().all(|&size| size == first),
+            nodes_pool_sizes.iter().all(|&size| size == first),
             "all initialized node pool sizes must match"
         );
 
