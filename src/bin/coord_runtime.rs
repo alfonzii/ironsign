@@ -250,8 +250,8 @@ fn export_signature(
         .map_err(|e| format!("create {} failed: {e}", sig_dir.display()))?;
 
     let sig_path = sig_dir.join(format!("signature_{round}.msgpack"));
-    let bytes = rmp_serde::to_vec_named(signature) // TODO: zistit ci treba "named", ci nestaci pure
-        .map_err(|e| format!("serialize signature failed: {e}"))?;
+    let bytes =
+        rmp_serde::to_vec(signature).map_err(|e| format!("serialize signature failed: {e}"))?;
     fs::write(&sig_path, bytes).map_err(|e| format!("write {} failed: {e}", sig_path.display()))?;
     Ok(sig_path)
 }
