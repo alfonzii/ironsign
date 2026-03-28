@@ -8,14 +8,13 @@ use cggmp24::{
 use rand::rngs::OsRng;
 use round_based::sim;
 
-mod presig_storage;
-
-use crate::presig_storage::StoredPresignature;
+mod ppd_serializer;
 
 fn main() {
     presignature_serde_sim_example();
 }
 
+#[allow(dead_code)]
 fn basic_sim_example() {
     let n: u16 = 3;
     let eid = ExecutionId::new(b"demo eid");
@@ -80,6 +79,7 @@ fn basic_sim_example() {
     }
 }
 
+#[allow(dead_code)]
 fn presignature_sim_example() {
     let n: u16 = 3;
     let participants: [u16; 3] = [0, 1, 2];
@@ -230,31 +230,39 @@ fn presignature_serde_sim_example() {
     .expect_ok()
     .into_vec();
 
-    let stored_presigs: Vec<StoredPresignature<Secp256k1>> = presigs
-        .into_iter()
-        .map(|(presig, public)| StoredPresignature { presig, public })
-        .collect();
+    let commitment = presigs[0].1.clone(); // same for all parties; just take from first
+    let presig_only: Vec<cggmp24::signing::Presignature<Secp256k1>> =
+        presigs.into_iter().map(|(presig, _)| presig).collect();
 
     // Save presignatures to file (MessagePack)
-    let presigs_bytes = rmp_serde::to_vec(&stored_presigs).expect("serialize presigs to msgpack");
+    let presigs_bytes = rmp_serde::to_vec(&presig_only).expect("serialize presigs to msgpack");
     fs::write("presignatures.msgpack", presigs_bytes).expect("write presignatures.msgpack");
+
+    // Save presignature public data using custom serializer wrapper
+    let commitment_bytes = ppd_serializer::encode_ppd_msgpack(&commitment)
+        .expect("serialize presignature public data to msgpack");
+    fs::write("presignature_public.msgpack", commitment_bytes)
+        .expect("write presignature_public.msgpack");
 
     // Load presignatures from file (MessagePack)
     let presigs_file_content =
         fs::read("presignatures.msgpack").expect("read presignatures.msgpack");
-    let stored_presigs_loaded: Vec<StoredPresignature<Secp256k1>> =
+    let presig_only_loaded: Vec<cggmp24::signing::Presignature<Secp256k1>> =
         rmp_serde::from_slice(&presigs_file_content).expect("deserialize presigs from msgpack");
+
+    // Load presignature public data from file using custom serializer wrapper
+    let commitment_file_content =
+        fs::read("presignature_public.msgpack").expect("read presignature_public.msgpack");
+    let commitment = ppd_serializer::decode_ppd_msgpack::<Secp256k1>(&commitment_file_content)
+        .expect("deserialize presignature public data from msgpack");
 
     // 5) Message to sign
     let msg = DataToSign::digest::<sha2::Sha256>(b"hello 3-of-3");
 
-    // save public data
-    let commitment = stored_presigs_loaded[0].public.clone(); // same for all parties; just take from first
-
     // 6) Issue partial signatures
-    let partials: Vec<_> = stored_presigs_loaded
+    let partials: Vec<_> = presig_only_loaded
         .into_iter()
-        .map(|stored_presig| stored_presig.presig.issue_partial_signature(msg))
+        .map(|presig| presig.issue_partial_signature(msg))
         .collect();
 
     // 7) Combine to full signature
@@ -269,6 +277,7 @@ fn presignature_serde_sim_example() {
     println!("OK: signature verified. r={:?}, s={:?}", sig.r, sig.s);
 }
 
+#[allow(dead_code)]
 fn keygen_sim_example() {
     let n: u16 = 3; // number of parties
     let t: u16 = 2; // threshold (t-out-of-n)
