@@ -2,7 +2,10 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use cggmp24::{DataToSign, signing::Presignature, supported_curves::Secp256k1};
+use cggmp24::{
+    DataToSign, PrehashedDataToSign, signing::Presignature, supported_curves::Secp256k1,
+};
+use generic_ec::Scalar;
 
 use ironsign::fifo_queue::FifoQueue;
 use ironsign::ppd_serializer::StoredPresignaturePublicData;
@@ -57,6 +60,8 @@ fn load_pools(
 }
 
 fn main() {
+    let prehashed = std::env::args().any(|a| a == "--prehashed");
+
     let input_dir = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "./output".to_string()); // TODO: to input
@@ -139,7 +144,13 @@ fn main() {
         );
 
         // ── Create message to sign ─────────────────────────────────────
-        let msg = DataToSign::digest::<sha2::Sha256>(&payload_bytes);
+        let msg = if prehashed {
+            // Payload is already a hash (e.g. Bitcoin sighash) – use as-is.
+            let scalar = Scalar::<Secp256k1>::from_be_bytes_mod_order(&payload_bytes);
+            PrehashedDataToSign::from_scalar(scalar).insecure_assume_preimage_known()
+        } else {
+            DataToSign::digest::<sha2::Sha256>(&payload_bytes)
+        };
 
         // ── Pop presignature and PPD from pools ────────────────────────
         let presig = presig_pool

@@ -3,10 +3,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use cggmp24::{
-    DataToSign, PartialSignature,
+    DataToSign, PartialSignature, PrehashedDataToSign,
     signing::{Presignature, Signature},
     supported_curves::Secp256k1,
 };
+use generic_ec::Scalar;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, sleep};
 
@@ -52,7 +53,7 @@ fn load_presig_pool(node_dir: &Path) -> NodeResult<FifoQueue<Presignature<Secp25
 /// The task accepts coordinator commands via channel:
 /// - `Init`: loads presignature pool from `input_dir/node_<id>`
 /// - `Sign`: pops one presignature and returns a partial signature for payload
-fn spawn_online_node(node_id: u16, input_dir: PathBuf) -> NodeHandle {
+fn spawn_online_node(node_id: u16, input_dir: PathBuf, prehashed: bool) -> NodeHandle {
     let (tx, mut rx) = mpsc::unbounded_channel::<NodeCommand>();
 
     tokio::spawn(async move {
@@ -88,7 +89,13 @@ fn spawn_online_node(node_id: u16, input_dir: PathBuf) -> NodeHandle {
                             .pop_next()
                             .ok_or_else(|| "presig pool exhausted".to_string())?;
 
-                        let msg = DataToSign::digest::<sha2::Sha256>(&payload);
+                        let msg = if prehashed {
+                            let scalar = Scalar::<Secp256k1>::from_be_bytes_mod_order(&payload);
+                            PrehashedDataToSign::from_scalar(scalar)
+                                .insecure_assume_preimage_known()
+                        } else {
+                            DataToSign::digest::<sha2::Sha256>(&payload)
+                        };
                         Ok(presig.issue_partial_signature(msg))
                     })();
 
@@ -251,6 +258,8 @@ fn export_signature(
 
 #[tokio::main]
 async fn main() {
+    let prehashed = std::env::args().any(|a| a == "--prehashed");
+
     let n: u16 = std::env::args()
         .nth(1)
         .and_then(|s| s.parse().ok())
@@ -271,7 +280,7 @@ async fn main() {
     }
 
     let handles: Vec<NodeHandle> = (1..n)
-        .map(|node_id| spawn_online_node(node_id, input_dir.clone()))
+        .map(|node_id| spawn_online_node(node_id, input_dir.clone(), prehashed))
         .collect();
 
     println!(
@@ -369,7 +378,12 @@ async fn main() {
             }
         };
 
-        let msg = DataToSign::digest::<sha2::Sha256>(&payload);
+        let msg = if prehashed {
+            let scalar = Scalar::<Secp256k1>::from_be_bytes_mod_order(&payload);
+            PrehashedDataToSign::from_scalar(scalar).insecure_assume_preimage_known()
+        } else {
+            DataToSign::digest::<sha2::Sha256>(&payload)
+        };
         let mut all_partials = Vec::with_capacity(n as usize);
         all_partials.push(offline_partial);
         all_partials.extend(online_partials);
