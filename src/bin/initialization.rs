@@ -206,8 +206,9 @@ fn regenerate_presignatures(n: u16, k: u16, output_dir: &Path, key_shares: &[Key
     let mut ppd_pool: FifoQueue<StoredPresignaturePublicData<Secp256k1>> =
         FifoQueue::with_capacity(k as usize);
 
+    println!("[presig] Generating {k} presignatures for each of {n} nodes...");
     for j in 0..k {
-        println!("[presig] Generating presignature {}/{}...", j + 1, k);
+        println!("[presig] Generating presignature set {}/{}...", j + 1, k);
         let eid_bytes = format!("init-presig-{j}");
         let eid_presig = ExecutionId::new(eid_bytes.as_bytes());
 
