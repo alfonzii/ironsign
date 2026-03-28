@@ -162,6 +162,32 @@ fn initialize(n: u16, output_dir: &Path) -> Vec<KeyShare> {
     }
 }
 
+/// Exports the MPC shared public key in a portable form for external consumers.
+///
+/// Output:
+/// - `public_key/shared_public_key.hex` (SEC1-compressed pubkey, hex-encoded)
+fn export_shared_public_key(output_dir: &Path, key_shares: &[KeyShare]) {
+    let public_key_dir = output_dir.join("public_key");
+    fs::create_dir_all(&public_key_dir).expect("create public_key directory");
+
+    let public_key_path = public_key_dir.join("shared_public_key.hex");
+    let public_key_bytes = key_shares
+        .first()
+        .expect("at least one key share must exist")
+        .shared_public_key
+        .to_bytes(true);
+    fs::write(
+        &public_key_path,
+        format!("{}\n", hex::encode(&public_key_bytes)),
+    )
+    .expect("write shared_public_key.hex");
+
+    println!(
+        "[init] Exported shared public key to {}",
+        public_key_path.display()
+    );
+}
+
 /// Generates and exports fresh presignatures for all `n` nodes.
 ///
 /// Per-node output:
@@ -255,6 +281,7 @@ fn main() {
 
     let output_dir = std::path::PathBuf::from(output_dir);
     let key_shares = initialize(n, &output_dir);
+    export_shared_public_key(&output_dir, &key_shares);
 
     regenerate_presignatures(n, k, &output_dir, &key_shares);
 

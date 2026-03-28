@@ -12,7 +12,7 @@
 
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use bitcoin::absolute::LockTime;
 use bitcoin::blockdata::script::ScriptBuf;
@@ -26,8 +26,6 @@ use bitcoin::{Address, Amount, Network, Sequence, Witness};
 
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 
-use cggmp24::key_share::{AnyKeyShare, KeyShare};
-use cggmp24::security_level::SecurityLevel128;
 use cggmp24::signing::Signature;
 use cggmp24::supported_curves::Secp256k1 as MpcSecp256k1;
 
@@ -40,21 +38,25 @@ fn connect_rpc() -> Client {
     .expect("connect to bitcoin regtest RPC")
 }
 
-/// Loads the MPC shared public key from the first key share on disk.
-fn load_mpc_public_key(output_dir: &str) -> CompressedPublicKey {
-    // TODO: pri 2 PC demo nebude fungovat - kluce su na init kompe, takze aux a coordinator k nim nemaju pristup. Preto treba nejak presunut pub key alebo to dajak inak premysliet
-    let ks_path = format!("{output_dir}/key_shares/key_share_0.msgpack");
-    let bytes = fs::read(&ks_path).expect("read key_share_0.msgpack");
-    let key_share: KeyShare<MpcSecp256k1, SecurityLevel128> =
-        rmp_serde::from_slice(&bytes).expect("deserialize key_share");
+/// Loads MPC shared public key from `public_key/shared_public_key.hex`.
+fn load_mpc_public_key(public_key_dir: &Path) -> CompressedPublicKey {
+    let public_key_path = public_key_dir.join("shared_public_key.hex");
+    let hex_str = fs::read_to_string(&public_key_path)
+        .unwrap_or_else(|e| panic!("read {} failed: {e}", public_key_path.as_path().display()));
 
-    let pk_point = key_share.shared_public_key();
+    let pk_bytes = hex::decode(hex_str.trim()).unwrap_or_else(|e| {
+        panic!(
+            "invalid hex in {}: {e}",
+            public_key_path.as_path().display()
+        )
+    });
 
-    // The MPC library stores the public key as a generic-ec Point.
-    // We need to extract the SEC1-compressed (33-byte) encoding.
-    let pk_bytes = pk_point.to_bytes(true);
-
-    CompressedPublicKey::from_slice(&pk_bytes).expect("parse compressed public key")
+    CompressedPublicKey::from_slice(&pk_bytes).unwrap_or_else(|e| {
+        panic!(
+            "parse compressed public key from {} failed: {e}",
+            public_key_path.as_path().display()
+        )
+    })
 }
 
 /// Derives a P2WPKH (SegWit v0) address from the MPC shared public key.
@@ -114,8 +116,12 @@ fn main() {
     );
 
     // ── 2. Load MPC public key and derive address B ────────────────────
-    println!("[btc] Loading MPC shared public key...");
-    let mpc_pubkey = load_mpc_public_key(&mpc_output_dir);
+    let public_key_dir = mpc_input_dir_path.join("public_key");
+    println!(
+        "[btc] Loading MPC shared public key from {}...",
+        public_key_dir.display()
+    );
+    let mpc_pubkey = load_mpc_public_key(&public_key_dir);
     let address_b = derive_address_b(&mpc_pubkey);
     println!("[btc] MPC public key: {}", mpc_pubkey);
     println!("[btc] Address B (P2WPKH): {}", address_b);
@@ -135,7 +141,7 @@ fn main() {
     mine_blocks(&rpc, 101, &address_a);
 
     // ── 4. Fund address B ──────────────────────────────────────────────
-    let fund_amount = Amount::from_btc(2.0).unwrap(); // TODO: funding without address_a.
+    let fund_amount = Amount::from_btc(2.0).unwrap(); //TODO: zistit jak tento funding funguje, pretoez tu nikde nefiguruje address_a.
     println!("[btc] Sending {} to address B...", fund_amount);
     let fund_txid = rpc
         .send_to_address(&address_b, fund_amount, None, None, None, None, None, None)
@@ -293,8 +299,8 @@ fn main() {
     println!("╔════════════════════════════════════════════════════════════════════════╗");
     println!("║  SUCCESS: 1 BTC sent from address B to address C                       ║");
     println!("║                                                                        ║");
-    println!("║  B = {} (MPC-controlled)       ║", address_b);
-    println!("║  C = {} (random destination)   ║", address_c);
+    println!("║  B = {} (MPC-controlled)     ║", address_b);
+    println!("║  C = {} (random destination) ║", address_c);
     println!("║                                                                        ║");
     println!("║  This proves the MPC/TSS system controls the private key               ║");
     println!("║  for address B and can produce valid Bitcoin signatures.               ║");
