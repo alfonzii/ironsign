@@ -174,7 +174,7 @@ async fn init_all_nodes_with_retry(handles: &[NodeHandle]) -> usize {
         }
 
         if !failed_nodes.is_empty() {
-            // TODO: ak failne jeden, tak sa loopuje odznova cez vsetky - zhodnotit ci to tak ma byt, alebo to dame ze sa bude retryovat len ten failnuty.
+            // INFO: If one failed, we retry all - for demo purpose it's simpler and ok to just retry all, and we expect them to be fixed together. In a more robust implementation, we could track individual node states and only retry failed ones.
             for (node_id, err) in &failed_nodes {
                 eprintln!("[coord] Init failed for node {node_id}: {err}");
             }
