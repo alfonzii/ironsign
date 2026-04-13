@@ -143,7 +143,7 @@ Arguments:
 - `input_dir` — input folder
 - `output_dir` — output folder
 
-#### <u>Important note to commands:</u>
+### Important note to commands:
 
 <!-- ..Because of the nature of prototype, that we are moving files here and there, it's created in a way, to be easier to orient. coord runtime and offline node both define input and output dir. Anything that the standalone programs output they put it in their defined output dir and anything they are expected to read, they try to read it from input dir.
 
@@ -215,6 +215,9 @@ Recommended flow:
 8. Bring offline output back to PC2
 9. Let `coord_runtime` combine the final signature
 10. Let `btc_auxiliary` finalize and broadcast the transaction to regtest
+
+#### Note:
+While using the prototype on one device beats the whole purpose, for developer usecase we can just redirect all input and output directories into one single directory, i.e. `output`. That way, we don't have to copy and move anything, and prototype will work out. It was designed on purpose with this feature, so it can be tested easily.
 
 ## How the demo works
 
