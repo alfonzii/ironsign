@@ -80,7 +80,7 @@ docker compose down -v
 ### 2. Run initialization on PC1
 
 ```bash
-./initialization n k dir
+./initialization -- n k dir
 ```
 
 Arguments:
@@ -110,7 +110,7 @@ Keep local:
 ### 3. Start offline node on PC1
 
 ```bash
-./offline_node input_dir output_dir --prehashed
+./offline_node -- input_dir output_dir --prehashed
 ```
 
 Arguments:
@@ -122,7 +122,7 @@ Arguments:
 ### 4. Start coordinator runtime on PC2
 
 ```bash
-./coord_runtime n input_dir output_dir --prehashed
+./coord_runtime -- n input_dir output_dir --prehashed
 ```
 
 Arguments:
@@ -135,7 +135,7 @@ Arguments:
 ### 5. Start BTC auxiliary on PC2
 
 ```bash
-./btc_auxiliary input_dir output_dir
+./btc_auxiliary -- input_dir output_dir
 ```
 
 Arguments:

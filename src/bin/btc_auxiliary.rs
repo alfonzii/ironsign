@@ -95,12 +95,12 @@ fn read_line(prompt: &str) -> String {
 }
 
 fn main() {
-    let mpc_output_dir = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "./output".to_string());
     let mpc_input_dir = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "./output".to_string()); // TODO: to input
+    let mpc_output_dir = std::env::args()
         .nth(2)
-        .unwrap_or_else(|| "./input".to_string());
+        .unwrap_or_else(|| "./output".to_string());
 
     let mpc_output_dir_path = PathBuf::from(&mpc_output_dir);
     let mpc_input_dir_path = PathBuf::from(&mpc_input_dir);
