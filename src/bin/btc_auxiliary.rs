@@ -97,7 +97,7 @@ fn read_line(prompt: &str) -> String {
 fn main() {
     let mpc_input_dir = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "./output".to_string()); // TODO: to input
+        .unwrap_or_else(|| "./input".to_string());
     let mpc_output_dir = std::env::args()
         .nth(2)
         .unwrap_or_else(|| "./output".to_string());
@@ -141,7 +141,7 @@ fn main() {
     mine_blocks(&rpc, 101, &address_a);
 
     // ── 4. Fund address B ──────────────────────────────────────────────
-    let fund_amount = Amount::from_btc(2.0).unwrap(); //TODO: zistit jak tento funding funguje, pretoez tu nikde nefiguruje address_a.
+    let fund_amount = Amount::from_btc(2.0).unwrap();
     println!("[btc] Sending {} to address B...", fund_amount);
     let fund_txid = rpc
         .send_to_address(&address_b, fund_amount, None, None, None, None, None, None)

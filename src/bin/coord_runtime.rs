@@ -266,7 +266,7 @@ async fn main() {
         .unwrap_or(3);
     let input_dir = std::env::args()
         .nth(2)
-        .unwrap_or_else(|| "./output".to_string()); // TODO: to input
+        .unwrap_or_else(|| "./input".to_string());
     let output_dir = std::env::args()
         .nth(3)
         .unwrap_or_else(|| "./output".to_string());
