@@ -1,7 +1,7 @@
 # ironsign
 
 > [!WARNING]
-> This project is in early development and is not guaranteed to be secure or stable. Use at your own risk.
+> This project was developed as university research project and is not guaranteed to be secure or stable. Use at your own risk.
 
 Prototype of an MPC/TSS-based Bitcoin signing system with:
 
@@ -10,8 +10,8 @@ Prototype of an MPC/TSS-based Bitcoin signing system with:
 - one offline signing node,
 - Bitcoin regtest demo through an auxiliary BTC layer.
 
-> **Status:** Work in progress.  
-> This README currently focuses on how to run the demo prototype.
+> **Status:** Translation in progress.  
+> This README currently focuses only on how to run the demo prototype. Further details to be found in documentation. Due to university research character, for now, documentation only in Slovak - translation to English in process.
 
 ## Overview
 
