@@ -11,7 +11,7 @@ Prototype of an MPC/TSS-based Bitcoin signing system with:
 - Bitcoin regtest demo through an auxiliary BTC layer.
 
 > **Status:** Translation in progress.  
-> This README currently focuses only on how to run the demo prototype. Further details to be found in documentation. Due to university research character, for now, documentation only in Slovak - translation to English in process.
+> This README currently focuses only on how to run the demo prototype. Further details to be found in documentation. Due to university research character, for now, documentation only in Slovak and only machine translation to English available. Better translation will be delivered ASAP.
 
 ## Overview
 
